@@ -878,10 +878,12 @@ void setup()
                   pedimu::dbgChip, pedimu::dbgStat, pedimu::dbgAccConf,
                   pedimu::dbgPwrCtrl, pedimu::dbgPwrConf,
                   pedimu::dbgVerify, pedimu::dbgErr);
-    Serial.printf("[imu] p6 ");
+    Serial.printf("[imu] mode=%s err=%d\n",
+                  pedimu::mode == pedimu::MODE_PHONE ? "PHONE" : "WRIST",
+                  (int)pedimu::dbgErr);
+    Serial.printf("[imu] pcfg ");
     for (int i = 0; i < 16; ++i) Serial.printf("%02X ", pedimu::dbgPage6[i]);
-    Serial.printf("\n[imu] p3 w0=%04X  page0=%02X %02X %02X %02X\n",
-                  (unsigned)pedimu::dbgParam,
+    Serial.printf("\n[imu] page0=%02X %02X %02X %02X\n",
                   pedimu::dbgPage0[0], pedimu::dbgPage0[1],
                   pedimu::dbgPage0[2], pedimu::dbgPage0[3]);
 
