@@ -39,6 +39,7 @@ static constexpr uint8_t STEP_EN_BIT  = 0x10;
 uint8_t  dbgChip    = 0;
 uint8_t  dbgStat    = 0;      // INTERNAL_STATUS
 uint8_t  dbgAccConf = 0;
+uint8_t  dbgAccRange = 0;     // 0x41 原始值（出厂态保持，不再强写）
 uint8_t  dbgPwrCtrl = 0;
 uint8_t  dbgPwrConf = 0;
 uint8_t  dbgPage6[16] = {0};  // page 6 回读
@@ -77,12 +78,14 @@ static bool readPage(uint8_t pg, uint8_t buf[16])
 // ---------------- 初始化 ----------------
 // 在 M5.begin() 之后调用（此时 8 KB 配置已上传）。
 //
-// ★ 出厂基线原则（2026-10-24 双计排查结论）：
-// 计数器由配置微码自带的功能使能 + 出厂腕式参数驱动，M5Unified 的 BMI270 begin
-// 完全不碰 feature page。曾尝试自写 25 参数 + 在 page6 word1 bit12 设"使能位"，
-// 导致硬件层双计（20 步计 36）且活动态常驻"跑"——真正的使能位在 page6 word3
-// bit4（Bosch API: STEP_CNT_4_STRT_ADDR=0x02 + STEP_COUNT_FEAT_EN_OFFSET=0x01，
-// mask 0x10），我们从未需要碰它。故此处只读不改，仅 dump 出厂值留证。
+// ★ 实测结论（2026-10-24 双计/死零排查）：
+// · 出厂配置的步计数器是【未使能】的（本版实测走 20 步 chip=0 纹丝不动）。
+// · 使能开关 = page 6 字节 3 的 bit4（word1 bit12）—— 旧固件一直写的这一位，
+//   写上后计数器立即工作；Bosch API 的 STEP_CNT_4(0x02)+EN_OFFSET(0x01) 换算
+//   出的 word3 bit4 实测无效，以实测为准。
+// · 双计（20 步计 36）不是这一位造成的，而是同一次 init 里把 ACC_CONF 从出厂
+//   0xA8（100Hz+性能模式）改成 0x26/0x28、ACC_RANGE 强写 0x00 等寄存器偏差。
+//   本版除使能位与 PWR_CTRL（只开加速度省电）外，其余寄存器一律保持出厂。
 bool begin()
 {
     dbgChip = rd8(R_CHIP_ID);
@@ -92,7 +95,7 @@ bool begin()
     wr8(R_PWR_CTRL, 0x04);
     delay(40);
 
-    // ---- 出厂配置 dump（page 3/4/5/6 + 使能 word），写串口留证 ----
+    // ---- 出厂配置 dump（page 3/4/5/6），写串口留证 ----
     uint8_t chk[16];
     for (uint8_t pg = PAGE_PARAMS; pg <= PAGE_CFG; ++pg) {
         if (readPage(pg, chk)) {
@@ -102,16 +105,26 @@ bool begin()
         }
     }
 
+    // 使能步计数器：page 6 字节 3 |= 0x10（实测有效位；出厂为 0）
+    if (!readPage(PAGE_CFG, chk)) { dbgErr = 2; ready = false; return false; }
+    chk[3] |= STEP_EN_BIT;
+    if (!wr8(R_FEAT_PAGE, PAGE_CFG)) { dbgErr = 3; ready = false; return false; }
+    delayMicroseconds(400);
+    if (!M5.In_I2C.writeRegister(ADDR_IMU, R_FEAT_DATA, chk, 16, 400000)) {
+        dbgErr = 4; ready = false; return false;
+    }
+    delayMicroseconds(400);
+
     // 全部回读，填诊断字段
     dbgVerify = 0;
     if (readPage(PAGE_CFG, chk)) {
         memcpy(dbgPage6, chk, 16);
-        // Bosch 定义的真使能位：word3 低字节 bit4（出厂应已置位）
-        dbgVerify |= (chk[6] & 0x10) ? 0x01 : 0x00;
+        // 实测使能位：page6 字节 3 bit4（见 begin() 注释）
+        dbgVerify |= (chk[3] & STEP_EN_BIT) ? 0x01 : 0x00;
     }
     if (readPage(PAGE_PARAMS, chk)) {
         dbgParam = (uint16_t)(chk[0] | (chk[1] << 8));
-        dbgVerify |= 0x02;             // 参数为出厂值，不再和自写表比对
+        dbgVerify |= 0x02;             // 参数保持出厂值
     }
     if (readPage(PAGE_OUT, chk)) memcpy(dbgPage0, chk, 16);
 
@@ -119,6 +132,7 @@ bool begin()
     dbgPwrCtrl = rd8(R_PWR_CTRL);
     dbgPwrConf = rd8(R_PWR_CONF);
     dbgStat    = rd8(R_INT_STAT);
+    dbgAccRange = rd8(R_ACC_RANGE);
 
     dbgErr = 0;
     ready  = true;

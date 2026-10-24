@@ -288,9 +288,10 @@ static void dbgPoll()
             // 诊断：BMI270 真实配置 + 计数现场。排查"每步双计"时用。
             uint32_t raw = 0, act = 0;
             pedimu::readSteps(&raw, &act);
-            Serial.printf("[imu] err=%u verify=%02X accconf=%02X pwrctrl=%02X pwrconf=%02X stat=%02X param=%04X(exp=%04X)\n",
+            Serial.printf("[imu] err=%u verify=%02X accconf=%02X accrange=%02X pwrctrl=%02X pwrconf=%02X stat=%02X param=%04X\n",
                           (unsigned)pedimu::dbgErr, (unsigned)pedimu::dbgVerify,
-                          (unsigned)pedimu::dbgAccConf, (unsigned)pedimu::dbgPwrCtrl,
+                          (unsigned)pedimu::dbgAccConf, (unsigned)pedimu::dbgAccRange,
+                          (unsigned)pedimu::dbgPwrCtrl,
                           (unsigned)pedimu::dbgPwrConf, (unsigned)pedimu::dbgStat,
                           (unsigned)pedimu::dbgParam);
             Serial.printf("[imu] raw=%lu hwBase=%lu hwInit=%u g_rtc.steps=%lu g_steps=%lu act=%lu\n",
