@@ -1,0 +1,18 @@
+# 构建产物
+out_dbg/
+out*/
+*.bin
+*.elf
+*.hex
+!tools/**/*.bin
+
+# Python
+__pycache__/
+*.pyc
+
+# 串口日志
+*.log
+
+# IDE
+.vscode/
+.idea/
