@@ -655,6 +655,9 @@ static void syncHardwareSteps()
     }
 }
 
+// M5.begin 之前抢读到的 BMI270 硬件计数器（用于挽救重启窗口内丢失的步数）
+static uint32_t g_preBootRaw = 0;
+
 // ------------------------------------------------------------
 void setup()
 {
@@ -776,6 +779,24 @@ void setup()
     // loadToday() 要等 M5.begin() 之后：RTC 没起来时 todayKey() 返回 0，
     // 跨天判断和 g_dayKey 都会失效。
 
+    // ★ 抢读 BMI270 硬件计数器：M5.begin 会软复位 BMI270（计数器清零），
+    //   而 RTC 基线 hwBase 只记录到最后一次静默存盘（深睡下最长 60s 前）。
+    //   期间走过的步数必须在此读走，否则启动后与基线做差时被吞掉
+    //   （实测：电池下走 20 步、60s 内插回 USB → 步数纹丝不动）。
+    g_preBootRaw = 0;
+    {
+        pedsleep::i2cOpen();
+        delay(2);
+        uint8_t pg = 0, b[4] = { 0, 0, 0, 0 };
+        if (pedsleep::rawWr(ADDR_IMU, 0x2F, pg) &&
+            pedsleep::rawRd(ADDR_IMU, 0x30, b, 4)) {
+            g_preBootRaw = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+                           ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+        }
+        Serial.printf("[ped] preBootRaw=%lu\n", (unsigned long)g_preBootRaw);
+        Serial.flush();
+    }
+
     auto cfg = M5.config();
     cfg.internal_imu    = true;
     cfg.internal_rtc    = true;
@@ -866,6 +887,17 @@ void setup()
 
     refreshPower();
     mergeRtcState();
+
+    // 合并 preBoot 抢读：与 RTC 基线 hwBase 做差 = 最后一次静默存盘后走过的步数。
+    // 若 M5.begin 没有复位计数器（计数器仍 ≈ preBootRaw），差值≈0，天然防双计。
+    if (pedimu::ready && g_preBootRaw) {
+        const uint32_t dPre = hwAccumulate(g_preBootRaw);
+        if (dPre) {
+            Serial.printf("[ped] preBoot merge +%lu\n", (unsigned long)dPre);
+            stepsAdd(dPre);
+            g_hwSteps += dPre;
+        }
+    }
 
     // 冷启动后 BMI270 的计数器从 0 开始，重建基线；
     // 深睡唤醒时计数器没复位，保留原基线继续累加
