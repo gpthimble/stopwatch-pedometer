@@ -83,9 +83,11 @@ static bool readPage(uint8_t pg, uint8_t buf[16])
 // · 使能开关 = page 6 字节 3 的 bit4（word1 bit12）—— 旧固件一直写的这一位，
 //   写上后计数器立即工作；Bosch API 的 STEP_CNT_4(0x02)+EN_OFFSET(0x01) 换算
 //   出的 word3 bit4 实测无效，以实测为准。
-// · 双计（20 步计 36）不是这一位造成的，而是同一次 init 里把 ACC_CONF 从出厂
-//   0xA8（100Hz+性能模式）改成 0x26/0x28、ACC_RANGE 强写 0x00 等寄存器偏差。
-//   本版除使能位与 PWR_CTRL（只开加速度省电）外，其余寄存器一律保持出厂。
+// · 双计（20 步计 36）与死零（20 步 chip=0）的根源：ACC_RANGE。出厂 = 0x02
+//   （±8g），而 Table 15 步计数/活动识别参数组按 ±2g、100Hz 标定——±8g 下同样
+//   摆臂的数字信号只有 1/4 幅度，全落在算法门槛以下（死零）；±2g 下正常工作。
+//   ACC_CONF 同理须为 100Hz NORMAL（0x28，Bosch 对该 feature 的推荐条件）。
+//   除使能位、PWR_CTRL（只开加速度省电）与上述两个标定条件外，其余保持出厂。
 bool begin()
 {
     dbgChip = rd8(R_CHIP_ID);
@@ -93,6 +95,9 @@ bool begin()
 
     // 只开加速度（M5Unified 走到 PWR_CTRL=0x0E，陀螺全开白耗电），其余全用出厂默认
     wr8(R_PWR_CTRL, 0x04);
+    // 步计数/活动识别参数组（Table 15）的标定条件：±2g + 100Hz NORMAL
+    wr8(R_ACC_CONF,  0x28);    // 100Hz + NORMAL 平均
+    wr8(R_ACC_RANGE, 0x00);    // ±2g（出厂 0x02 = ±8g，步数引擎在此量程下死零）
     delay(40);
 
     // ---- 出厂配置 dump（page 3/4/5/6），写串口留证 ----
