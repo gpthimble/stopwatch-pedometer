@@ -29,19 +29,11 @@ static constexpr uint8_t R_FEAT_DATA = 0x30;   // 每页 16 字节窗口
 
 static constexpr uint8_t PAGE_OUT    = 0;      // 输出页：步数计数 + 活动状态
 static constexpr uint8_t PAGE_PARAMS = 3;      // 25 个参数起始页
-static constexpr uint8_t PAGE_CFG    = 6;      // 使能位所在页
-static constexpr uint8_t STEP_EN_IDX = 0x03;   // 0x02 + 0x01
-static constexpr uint8_t STEP_EN_BIT = 0x10;
-
-// Bosch 数据手册 Table 15：腕式步数参数（25 项）
-static const uint16_t STEP_PARAMS[25] = {
-    301, 31700, 315, 31451, 4,
-    31551, 27853, 1219, 2437, 1219,
-    (uint16_t)59116,            // -6420，按 16 位有符号写入
-    17932, 1, 39, 25,
-    150, 160, 1, 12, 15600,
-    256, 1, 3, 1, 14
-};
+static constexpr uint8_t PAGE_CFG    = 6;      // 步计数 feature 配置页
+// Bosch API 实测约定：使能位 = page6 word(STEP_CNT_4=0x02 + EN_OFFSET=0x01)
+// → 字节 6 的 bit4。page6 word1 bit12 不是步计数使能（曾误写导致故障）。
+static constexpr uint8_t STEP_EN_BYTE = 6;
+static constexpr uint8_t STEP_EN_BIT  = 0x10;
 
 // ---------------- 诊断 ----------------
 uint8_t  dbgChip    = 0;
@@ -72,10 +64,6 @@ static inline bool rdn(uint8_t reg, uint8_t *buf, size_t n)
 {
     return M5.In_I2C.readRegister(ADDR_IMU, reg, buf, n, 400000);
 }
-static inline bool wrn(uint8_t reg, const uint8_t *buf, size_t n)
-{
-    return M5.In_I2C.writeRegister(ADDR_IMU, reg, buf, n, 400000);
-}
 
 // ---------------- feature page 访问 ----------------
 // 切页后要给芯片一点时间，否则紧跟的突发读可能仍在旧页
@@ -86,74 +74,44 @@ static bool readPage(uint8_t pg, uint8_t buf[16])
     return rdn(R_FEAT_DATA, buf, 16);
 }
 
-static bool writePage(uint8_t pg, const uint8_t buf[16])
-{
-    if (!wr8(R_FEAT_PAGE, pg)) return false;
-    delayMicroseconds(400);
-    return wrn(R_FEAT_DATA, buf, 16);
-}
-
-// 写 25 个参数并逐页回读比对
-static bool writeParams()
-{
-    uint8_t i = 0;
-    uint8_t buf[16], chk[16];
-
-    for (uint8_t pg = PAGE_PARAMS; pg <= PAGE_CFG; ++pg) {
-        if (!readPage(pg, buf)) return false;
-
-        const int words = (pg == PAGE_CFG) ? 1 : 8;
-        for (int w = 0; w < words && i < 25; ++w) {
-            buf[w * 2]     = (uint8_t)(STEP_PARAMS[i] & 0xFF);
-            buf[w * 2 + 1] = (uint8_t)(STEP_PARAMS[i] >> 8);
-            ++i;
-        }
-        if (!writePage(pg, buf))   return false;
-        if (!readPage(pg, chk))    return false;
-        if (memcmp(chk, buf, (size_t)words * 2) != 0) return false;
-    }
-    return i == 25;
-}
-
 // ---------------- 初始化 ----------------
-// 在 M5.begin() 之后调用（此时 8 KB 配置已上传）
+// 在 M5.begin() 之后调用（此时 8 KB 配置已上传）。
+//
+// ★ 出厂基线原则（2026-10-24 双计排查结论）：
+// 计数器由配置微码自带的功能使能 + 出厂腕式参数驱动，M5Unified 的 BMI270 begin
+// 完全不碰 feature page。曾尝试自写 25 参数 + 在 page6 word1 bit12 设"使能位"，
+// 导致硬件层双计（20 步计 36）且活动态常驻"跑"——真正的使能位在 page6 word3
+// bit4（Bosch API: STEP_CNT_4_STRT_ADDR=0x02 + STEP_COUNT_FEAT_EN_OFFSET=0x01，
+// mask 0x10），我们从未需要碰它。故此处只读不改，仅 dump 出厂值留证。
 bool begin()
 {
     dbgChip = rd8(R_CHIP_ID);
     if (dbgChip != 0x24) { dbgErr = 1; ready = false; return false; }
 
-    wr8(R_PWR_CONF,  0x00);    // 关高级省电，feature engine 要按标称速率跑
-    wr8(R_IF_CONF,   0x00);    // M5Unified 打开过辅机 I2C，这里关掉
-    wr8(R_ACC_CONF,  0x28);    // 100 Hz + NORMAL 平均 —— Bosch 步计数器参数组按 100Hz 标定；
-                               // 曾配 0x26(50Hz) 导致硬件层双计（raw 每步 +2）且活动态常驻"跑"
-    wr8(R_ACC_RANGE, 0x00);    // ±2 g
-    wr8(R_PWR_CTRL,  0x04);    // 只开加速度，陀螺/温度/辅机全停
+    // 只开加速度（M5Unified 走到 PWR_CTRL=0x0E，陀螺全开白耗电），其余全用出厂默认
+    wr8(R_PWR_CTRL, 0x04);
     delay(40);
 
-    // 1) 先关步数引擎
-    uint8_t p6[16];
-    if (!readPage(PAGE_CFG, p6))      { dbgErr = 2; return false; }
-    p6[STEP_EN_IDX] &= (uint8_t)~STEP_EN_BIT;
-    if (!writePage(PAGE_CFG, p6))     { dbgErr = 3; return false; }
-
-    // 2) 写参数
-    if (!writeParams())                { dbgErr = 4; return false; }
-
-    // 3) 再开引擎
-    if (!readPage(PAGE_CFG, p6))       { dbgErr = 5; return false; }
-    p6[STEP_EN_IDX] |= STEP_EN_BIT;
-    if (!writePage(PAGE_CFG, p6))      { dbgErr = 6; return false; }
-
-    // 4) 全部回读，填诊断字段
-    dbgVerify = 0;
+    // ---- 出厂配置 dump（page 3/4/5/6 + 使能 word），写串口留证 ----
     uint8_t chk[16];
+    for (uint8_t pg = PAGE_PARAMS; pg <= PAGE_CFG; ++pg) {
+        if (readPage(pg, chk)) {
+            Serial.printf("[imu] factory p%u", pg);
+            for (int i = 0; i < 16; ++i) Serial.printf(" %02X", chk[i]);
+            Serial.println();
+        }
+    }
+
+    // 全部回读，填诊断字段
+    dbgVerify = 0;
     if (readPage(PAGE_CFG, chk)) {
         memcpy(dbgPage6, chk, 16);
-        if (chk[STEP_EN_IDX] & STEP_EN_BIT) dbgVerify |= 0x01;
+        // Bosch 定义的真使能位：word3 低字节 bit4（出厂应已置位）
+        dbgVerify |= (chk[6] & 0x10) ? 0x01 : 0x00;
     }
     if (readPage(PAGE_PARAMS, chk)) {
         dbgParam = (uint16_t)(chk[0] | (chk[1] << 8));
-        if (dbgParam == STEP_PARAMS[0]) dbgVerify |= 0x02;
+        dbgVerify |= 0x02;             // 参数为出厂值，不再和自写表比对
     }
     if (readPage(PAGE_OUT, chk)) memcpy(dbgPage0, chk, 16);
 
@@ -163,7 +121,7 @@ bool begin()
     dbgStat    = rd8(R_INT_STAT);
 
     dbgErr = 0;
-    ready  = true;             // 即使回读不符也继续读，调试页会显示真实状态
+    ready  = true;
     return ready;
 }
 
@@ -184,18 +142,12 @@ bool readSteps(uint32_t *count, uint32_t *act)
     return true;
 }
 
-// 进深睡前确认引擎还在跑
+// 进深睡前确认引擎还在跑（只保电源配置，绝不碰 feature page —— 见 begin() 注释）
 void prepareSleep()
 {
     if (!ready) return;
     wr8(R_PWR_CONF, 0x00);
     wr8(R_PWR_CTRL, 0x04);
-
-    uint8_t p6[16];
-    if (readPage(PAGE_CFG, p6) && !(p6[STEP_EN_IDX] & STEP_EN_BIT)) {
-        p6[STEP_EN_IDX] |= STEP_EN_BIT;
-        writePage(PAGE_CFG, p6);
-    }
 }
 
 } // namespace pedimu

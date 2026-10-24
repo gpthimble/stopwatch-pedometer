@@ -1013,8 +1013,8 @@ static void drawDebugHw()
     textC(g_cx, 224, v, F_SM,
           (pedimu::dbgVerify & 1) ? C_DIM : C_WARN);
 
-    snprintf(v, sizeof(v), "参数 %04X / %04X",
-             pedimu::dbgParam, pedimu::STEP_PARAMS[0]);
+    snprintf(v, sizeof(v), "参数 %04X",
+             pedimu::dbgParam);
     textC(g_cx, 254, v, F_SM,
           (pedimu::dbgVerify & 2) ? C_DIM : C_WARN);
 

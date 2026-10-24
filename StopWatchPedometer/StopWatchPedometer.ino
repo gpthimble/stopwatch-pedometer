@@ -292,7 +292,7 @@ static void dbgPoll()
                           (unsigned)pedimu::dbgErr, (unsigned)pedimu::dbgVerify,
                           (unsigned)pedimu::dbgAccConf, (unsigned)pedimu::dbgPwrCtrl,
                           (unsigned)pedimu::dbgPwrConf, (unsigned)pedimu::dbgStat,
-                          (unsigned)pedimu::dbgParam, (unsigned)pedimu::STEP_PARAMS[0]);
+                          (unsigned)pedimu::dbgParam);
             Serial.printf("[imu] raw=%lu hwBase=%lu hwInit=%u g_rtc.steps=%lu g_steps=%lu act=%lu\n",
                           (unsigned long)raw, (unsigned long)g_rtc.hwBase,
                           (unsigned)g_rtc.hwInit, (unsigned long)g_rtc.steps,
@@ -858,8 +858,8 @@ void setup()
                   pedimu::dbgVerify, pedimu::dbgErr);
     Serial.printf("[imu] p6 ");
     for (int i = 0; i < 16; ++i) Serial.printf("%02X ", pedimu::dbgPage6[i]);
-    Serial.printf("\n[imu] p3 w0=%04X expect=%04X  page0=%02X %02X %02X %02X\n",
-                  (unsigned)pedimu::dbgParam, (unsigned)pedimu::STEP_PARAMS[0],
+    Serial.printf("\n[imu] p3 w0=%04X  page0=%02X %02X %02X %02X\n",
+                  (unsigned)pedimu::dbgParam,
                   pedimu::dbgPage0[0], pedimu::dbgPage0[1],
                   pedimu::dbgPage0[2], pedimu::dbgPage0[3]);
 
