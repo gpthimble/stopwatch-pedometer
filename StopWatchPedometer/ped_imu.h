@@ -27,12 +27,14 @@ static constexpr uint8_t R_PWR_CTRL  = 0x7D;
 static constexpr uint8_t R_FEAT_PAGE = 0x2F;
 static constexpr uint8_t R_FEAT_DATA = 0x30;   // 每页 16 字节窗口
 
-static constexpr uint8_t PAGE_OUT    = 0;      // 输出页：步数计数 + 活动状态
+static constexpr uint8_t PAGE_OUT    = 0;      // 输出页：步数计数等输出
 static constexpr uint8_t PAGE_PARAMS = 3;      // 25 个参数起始页
 static constexpr uint8_t PAGE_CFG    = 6;      // 步计数 feature 配置页
-// Bosch API 实测约定：使能位 = page6 word(STEP_CNT_4=0x02 + EN_OFFSET=0x01)
-// → 字节 6 的 bit4。page6 word1 bit12 不是步计数使能（曾误写导致故障）。
-static constexpr uint8_t STEP_EN_BYTE = 6;
+// Bosch 字节偏移语义（bmi2_defs.h）：使能字节 = STEP_CNT_4_STRT_ADDR(0x02)
+// + STEP_COUNT_FEAT_EN_OFFSET(0x01) = page6 字节 3。
+// bit3=en_detector / bit4=en_counter(MASK 0x10) / bit5=en_activity(MASK 0x20)。
+// 出厂字节 3 = 0x00（全关），M5Unified 配置文件内嵌值同为 0。
+static constexpr uint8_t STEP_EN_BYTE = 3;
 static constexpr uint8_t STEP_EN_BIT  = 0x10;
 
 // ---------------- 诊断 ----------------
@@ -40,6 +42,7 @@ uint8_t  dbgChip    = 0;
 uint8_t  dbgStat    = 0;      // INTERNAL_STATUS
 uint8_t  dbgAccConf = 0;
 uint8_t  dbgAccRange = 0;     // 0x41 原始值（出厂态保持，不再强写）
+uint8_t  dbgIfConf  = 0;      // 0x6B 出厂值（写 0 前的快照）
 uint8_t  dbgPwrCtrl = 0;
 uint8_t  dbgPwrConf = 0;
 uint8_t  dbgPage6[16] = {0};  // page 6 回读
@@ -78,26 +81,32 @@ static bool readPage(uint8_t pg, uint8_t buf[16])
 // ---------------- 初始化 ----------------
 // 在 M5.begin() 之后调用（此时 8 KB 配置已上传）。
 //
-// ★ 实测结论（2026-10-24 双计/死零排查）：
-// · 出厂配置的步计数器是【未使能】的（本版实测走 20 步 chip=0 纹丝不动）。
-// · 使能开关 = page 6 字节 3 的 bit4（word1 bit12）—— 旧固件一直写的这一位，
-//   写上后计数器立即工作；Bosch API 的 STEP_CNT_4(0x02)+EN_OFFSET(0x01) 换算
-//   出的 word3 bit4 实测无效，以实测为准。
-// · 双计（20 步计 36）与死零（20 步 chip=0）的根源：ACC_RANGE。出厂 = 0x02
-//   （±8g），而 Table 15 步计数/活动识别参数组按 ±2g、100Hz 标定——±8g 下同样
-//   摆臂的数字信号只有 1/4 幅度，全落在算法门槛以下（死零）；±2g 下正常工作。
-//   ACC_CONF 同理须为 100Hz NORMAL（0x28，Bosch 对该 feature 的推荐条件）。
-//   除使能位、PWR_CTRL（只开加速度省电）与上述两个标定条件外，其余保持出厂。
+// ★ 最终结论（2026-10-24 完整排查，含 Bosch AN000/数据手册/API 源码核对）：
+// · 使能字 = page 6 word1（字节 2-3），使能字节 = STEP_CNT_4(0x02) +
+//   FEAT_EN_OFFSET(0x01) = 字节 3：bit3=en_detector / bit4=en_counter /
+//   bit5=en_activity。出厂字节 3 = 0x00（全关）—— M5Unified 配置文件内嵌的
+//   使能字同样是 0，计数器必须由主机使能。我们写 bit4（en_counter）是正确的。
+// · 死零（走 20 步 chip=0）的根源：出厂 ACC_RANGE=0x02（±8g），而 Table 15
+//   腕戴参数组按 ±2g、100Hz 标定，±8g 下信号幅度只有 1/4，落在门槛以下。
+// · 灵敏度异常（正常摆臂不计数、大摆臂才触发且双计）的对账结果：唯一能正常
+//   计数的配置（22:02 实验 chip=36）与其他版本的差异是 IF_CONF=0x00 —— 辅机
+//   I2C 使能时 feature 引擎时序被干扰。本版恢复 IF_CONF=0x00。
+// · act 字段：en_activity 从未使能，page0 字节 4-5 不是有效活动状态，仅供参考。
+// · 官方渠道（数据手册/AN000/API/M5Unified/官方 demo）均无"口袋参数表"，
+//   Table 15 腕戴参数是唯一公开配置；参数保持出厂，不再自写。
 bool begin()
 {
     dbgChip = rd8(R_CHIP_ID);
     if (dbgChip != 0x24) { dbgErr = 1; ready = false; return false; }
 
-    // 只开加速度（M5Unified 走到 PWR_CTRL=0x0E，陀螺全开白耗电），其余全用出厂默认
+    // 只开加速度（M5Unified 走到 PWR_CTRL=0x0E，陀螺全开白耗电）
     wr8(R_PWR_CTRL, 0x04);
-    // 步计数/活动识别参数组（Table 15）的标定条件：±2g + 100Hz NORMAL
+    // 步计数参数组（Table 15）的标定条件：±2g + 100Hz NORMAL（Bosch API 同款）
     wr8(R_ACC_CONF,  0x28);    // 100Hz + NORMAL 平均
     wr8(R_ACC_RANGE, 0x00);    // ±2g（出厂 0x02 = ±8g，步数引擎在此量程下死零）
+    // 关辅机 I2C：辅机使能时 feature 引擎时序受扰（实测正常摆臂不出步）
+    dbgIfConf = rd8(R_IF_CONF);
+    wr8(R_IF_CONF, 0x00);
     delay(40);
 
     // ---- 出厂配置 dump（page 3/4/5/6），写串口留证 ----
@@ -110,7 +119,7 @@ bool begin()
         }
     }
 
-    // 使能步计数器：page 6 字节 3 |= 0x10（实测有效位；出厂为 0）
+    // 使能步计数器（仅 en_counter，bit4；不碰 detector/activity）
     if (!readPage(PAGE_CFG, chk)) { dbgErr = 2; ready = false; return false; }
     chk[3] |= STEP_EN_BIT;
     if (!wr8(R_FEAT_PAGE, PAGE_CFG)) { dbgErr = 3; ready = false; return false; }
@@ -124,7 +133,7 @@ bool begin()
     dbgVerify = 0;
     if (readPage(PAGE_CFG, chk)) {
         memcpy(dbgPage6, chk, 16);
-        // 实测使能位：page6 字节 3 bit4（见 begin() 注释）
+        // en_counter = page6 字节 3 bit4，应已置位
         dbgVerify |= (chk[3] & STEP_EN_BIT) ? 0x01 : 0x00;
     }
     if (readPage(PAGE_PARAMS, chk)) {
@@ -145,7 +154,7 @@ bool begin()
 }
 
 // ---------------- 读计数 ----------------
-// count = page 0 的 32 位步数；act = 同页的活动状态（0 静止 1 站 2 走 3 跑）
+// count = page 0 的 32 位步数；act = 同页字节 4-5（en_activity 未使能，值无意义）
 bool readSteps(uint32_t *count, uint32_t *act)
 {
     uint8_t b[16];
