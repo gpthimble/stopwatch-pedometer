@@ -1045,7 +1045,7 @@ void loop()
 
         // ---------- 电源键：单击亮屏 / 双击关机 ----------
         // M5PM1 的 PEK 中断未使能，getKeyState() 读 IRQ_STATUS3 的锁存位，
-        // 恒为 0，本段不产生动作。
+        // 恒为 0，本段不产生动作。双击关机与长按进入下载模式由 M5PM1 自身响应。
         static uint32_t pekLast = 0, pekPoll = 0;
         static bool     pekArmed = false;
         if (now - pekPoll >= 40) {
