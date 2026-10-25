@@ -72,12 +72,12 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 | 项目 | 实现 |
 |---|---|
 | 显示 | M5GFX 驱动 CO5300，QSPI 80 MHz。466×466 RGB565 画布，双缓冲，整屏推送 |
-| 主页双环 | 外圈按 30 分钟一格记录当天活动，共 48 格，格内按步态取色；内圈为目标完成度 |
+| 主页双环 | 外圈按 1 分钟一格记录当天活动，共 1440 格，按该分钟的步态取色，当前分钟涂到此刻；内圈为目标完成度 |
 | 触摸 | CST820，I2C 轮询。按下后锁定主轴，纵向滚动列表，横向切换页面 |
 | 计步 | BMI270 片上 feature engine 计数，配置包为 legacy（手机场景）。MCU 每秒读取一次计数器，累加差值；同一读出的步态字节区分步行与跑步 |
 | 计时 | RX8130 RTC，I2C。每秒读取一次，用于显示与跨天判断 |
 | 电源 | M5PM1 三路 LDO，M5IOE1 扩展 IO。显示屏与扬声器位于独立供电轨，可单独断开 |
-| 存储 | 设置与当日成绩存于 NVS，含 48 格分时明细。修改后 700 ms 写入 |
+| 存储 | 设置与当日成绩存于 NVS，含 1440 格分时明细（每格 2 bit，共 360 B）。修改后 700 ms 写入 |
 | 字体 | 点阵字模随固件编译 |
 
 ## 休眠与续航
@@ -114,7 +114,7 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 ```bash
 esptool --chip esp32s3 -p COM5 -b 460800 write_flash \
   --flash_mode keep --flash_freq keep --flash_size keep \
-  0x0 dist/StopWatch_Pedometer_v2.6.bin
+  0x0 dist/StopWatch_Pedometer_v2.7.bin
 ```
 
 三个 `keep` 用于保留镜像 header 中的 flash 模式、频率与容量设定。省略时 header 被改写为 `qio`，ROM 停在 `mode:QIO` 之后反复复位。

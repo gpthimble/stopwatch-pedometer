@@ -31,13 +31,27 @@ static constexpr bool POWER_LED_ON = false;
 
 #define HIST_DAYS 7
 
-// 今日按 30 分钟一格，共 48 格，用于主页色环按时间顺序着色
-#define BKT_N 48
+// 今日按 1 分钟一格，共 1440 格，用于主页外环按时间顺序着色。
+// 每格 2 bit：0 无步数 / 1 走路 / 2 跑步，全天占 360 B。
+#define BKT_N 1440
 struct DayBuckets
 {
-    uint16_t step[BKT_N];
-    uint16_t run[BKT_N];
+    uint8_t lvl[BKT_N / 4];
 };
+
+// 分时格读写。同一格内只保留更高的强度，后写的弱状态不覆盖强状态。
+static inline uint8_t bktGet(const uint8_t *arr, int i)
+{
+    return (uint8_t)((arr[i >> 2] >> ((i & 3) << 1)) & 0x03);
+}
+
+static inline void bktPut(uint8_t *arr, int i, uint8_t lv)
+{
+    const int     sh = (i & 3) << 1;
+    const uint8_t c  = (uint8_t)((arr[i >> 2] >> sh) & 0x03);
+    if (lv <= c) return;
+    arr[i >> 2] = (uint8_t)((arr[i >> 2] & ~(0x03 << sh)) | (uint8_t)(lv << sh));
+}
 
 // ------------------------------------------------------------
 // 用户设置（可在设备内直接修改并保存）
@@ -81,8 +95,7 @@ struct SleepState
     uint8_t  lowBat;
     uint8_t  failCnt;    // 静默唤醒连续失败次数，达到 3 次则停用深睡
     uint8_t  dbgBoot;    // 调试：强制下次唤醒走完整启动，不跑静默通道
-    uint16_t bktStep[BKT_N];   // 今日各时段步数
-    uint16_t bktRun[BKT_N];    // 其中跑步步数
+    uint8_t  bktLvl[BKT_N / 4];   // 今日各时段的运动强度（与 g_bkt 同格式）
 };
 RTC_DATA_ATTR SleepState g_rtc;
 
@@ -415,24 +428,28 @@ static uint32_t histAvg()
 }
 
 // ------------------------------------------------------------
-// 分时明细：每 30 分钟一格。当前格由主循环每秒刷新一次，
+// 分时明细：每 1 分钟一格。当前格与格内进度由主循环每秒刷新，
 // 累加步数时直接用缓存值，避免每步都去读一次 RTC。
+// frac 返回该格已经走过的比例，用于外环只涂到此刻。
 // ------------------------------------------------------------
-static int bucketNow()
+static int bucketNow(float *frac = nullptr)
 {
+    if (frac) *frac = 1.0f;
     if (!M5.Rtc.isEnabled()) return 0;
     auto dt = M5.Rtc.getDateTime();
     if (dt.date.year < 2024) return 0;
-    int b = (int)dt.time.hours * 2 + (dt.time.minutes >= 30 ? 1 : 0);
+    int b = (int)dt.time.hours * 60 + (int)dt.time.minutes;
     if (b < 0 || b >= BKT_N) b = 0;
+    if (frac) *frac = (float)dt.time.seconds / 60.0f;
     return b;
 }
 
-int g_bktCur = 0;
+int   g_bktCur  = 0;      // 当前格序号
+float g_bktFrac = 1.0f;   // 当前格已走过的比例 0..1
 
 static void bucketTick()
 {
-    g_bktCur = bucketNow();
+    g_bktCur = bucketNow(&g_bktFrac);
 }
 
 static void bucketClear()
@@ -440,11 +457,11 @@ static void bucketClear()
     memset(&g_bkt, 0, sizeof(g_bkt));
 }
 
-static void bktAdd(uint16_t *arr, uint32_t n)
+// 记下当前这一分钟的状态：0 无步数 / 1 走路 / 2 跑步
+static void bktMark(uint8_t lv)
 {
-    if (!n) return;
-    const uint32_t v = (uint32_t)arr[g_bktCur] + n;
-    arr[g_bktCur] = (v > 65535u) ? 65535u : (uint16_t)v;
+    if (!lv) return;
+    bktPut(g_bkt.lvl, g_bktCur, lv);
 }
 
 // ------------------------------------------------------------
@@ -476,8 +493,8 @@ static void loadToday()
     }
 
     // 跨天时桶已经被清空，不能再把昨天的那份读回来
-    if (!rolled && g_prefs.getBytesLength("bkt") == sizeof(g_bkt)) {
-        g_prefs.getBytes("bkt", &g_bkt, sizeof(g_bkt));
+    if (!rolled && g_prefs.getBytesLength("bkt3") == sizeof(g_bkt)) {
+        g_prefs.getBytes("bkt3", &g_bkt, sizeof(g_bkt));
     }
     else if (rolled) {
         bucketClear();
@@ -491,15 +508,14 @@ static void saveToday(bool force = false)
     g_prefs.putUInt("steps", g_steps);
     g_prefs.putUInt("run",   g_runSteps);
     g_prefs.putUInt("active", g_activeSec);
-    g_prefs.putBytes("bkt", &g_bkt, sizeof(g_bkt));
+    g_prefs.putBytes("bkt3", &g_bkt, sizeof(g_bkt));
     if (g_dayKey) g_prefs.putInt("day", g_dayKey);
     // RTC 内存同步：深睡醒来合并时靠它取较大值，
     // 两处长期不一致会让归档拿到旧值（0），把历史柱状图抹平
     g_rtc.steps     = g_steps;
     g_rtc.run       = g_runSteps;
     g_rtc.activeSec = g_activeSec;
-    memcpy(g_rtc.bktStep, g_bkt.step, sizeof(g_bkt.step));
-    memcpy(g_rtc.bktRun,  g_bkt.run,  sizeof(g_bkt.run));
+    memcpy(g_rtc.bktLvl, g_bkt.lvl, sizeof(g_bkt.lvl));
     if (g_dayKey) g_rtc.dayKey = g_dayKey;
     g_savedSteps = g_steps;
 }
@@ -535,11 +551,11 @@ static void feedback(uint8_t level)
     }
 }
 
-static void stepsAdd(uint32_t n)
+static void stepsAdd(uint32_t n, uint8_t lv = 1)
 {
     if (n == 0) return;
     g_steps += n;
-    bktAdd(g_bkt.step, n);
+    bktMark(lv);
     g_lastStepMs = millis();
     if (g_steps >= g_nextMilestone) {
         g_nextMilestone = ((g_steps / 1000) + 1) * 1000;

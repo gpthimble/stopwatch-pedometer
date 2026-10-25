@@ -184,17 +184,17 @@ static void mergeRtcState()
         g_runSteps  = 0;
         g_activeSec = 0;
         bucketClear();
-        memcpy(g_rtc.bktStep, g_bkt.step, sizeof(g_bkt.step));
-        memcpy(g_rtc.bktRun,  g_bkt.run,  sizeof(g_bkt.run));
+        memcpy(g_rtc.bktLvl, g_bkt.lvl, sizeof(g_bkt.lvl));
         g_nextMilestone = 1000;
     } else {
         if (g_rtc.steps     > g_steps)     g_steps     = g_rtc.steps;
         if (g_rtc.run       > g_runSteps)  g_runSteps  = g_rtc.run;
         if (g_rtc.activeSec > g_activeSec) g_activeSec = g_rtc.activeSec;
-        // 睡眠期间的分时明细只存在 RTC 里，逐格取较大值合并
+        // 睡眠期间的分时明细只存在 RTC 里，逐分钟取较高强度合并
         for (int i = 0; i < BKT_N; ++i) {
-            if (g_rtc.bktStep[i] > g_bkt.step[i]) g_bkt.step[i] = g_rtc.bktStep[i];
-            if (g_rtc.bktRun[i]  > g_bkt.run[i])  g_bkt.run[i]  = g_rtc.bktRun[i];
+            const uint8_t a = bktGet(g_rtc.bktLvl, i);
+            const uint8_t b = bktGet(g_bkt.lvl,    i);
+            if (a > b) bktPut(g_bkt.lvl, i, a);
         }
     }
     if (g_rtc.vbat) g_vbat = g_rtc.vbat;
@@ -662,10 +662,8 @@ static void syncHardwareSteps()
     if (d) {
         // 本秒的步态由硬件给出，按状态把这段增量归入跑步或步行。
         // 状态取自读取瞬间，与实际步态最多差一个采样周期。
-        if (g_actCode == pedimu::ACT_RUN) {
-            g_runSteps += d;
-            bktAdd(g_bkt.run, d);
-        }
+        const bool isRun = (g_actCode == pedimu::ACT_RUN);
+        if (isRun) g_runSteps += d;
 
         // [stp] 诊断：raw=硬件计数器现值 d=本次增量。正常走路 raw 每次 +1；
         // 若 raw 每次 +2 → BMI270 在硬件层双计（参数/配置问题）；
@@ -674,7 +672,7 @@ static void syncHardwareSteps()
                       (unsigned long)c, (unsigned long)d,
                       (unsigned long)(g_steps + d), (unsigned long)act,
                       (unsigned long)g_runSteps);
-        stepsAdd(d);
+        stepsAdd(d, isRun ? 2 : 1);
         g_hwSteps += d;
     }
 }

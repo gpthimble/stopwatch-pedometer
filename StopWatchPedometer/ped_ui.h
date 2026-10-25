@@ -322,9 +322,9 @@ static inline int cwHueOf(int dx, int dy)
     return h;
 }
 
-// 时间轴色环：整圈按当天 48 个时段等分，0 点在正上方。
-// 已过的时段按运动类型取色：无步数 = 静止色，跑步占多数 = 跑步色，其余 = 走路色；
-// 未到的时段用更暗的未来色，环上因此有一道可见的时间分界。
+// 时间轴外环：整圈按当天 1440 个 1 分钟时段等分，0 点在正上方。
+// 已过的时段按该分钟的强度取色：无步数 = 静止色，走路 = 主题色，跑步 = 强调色。
+// 当前分钟只涂到此刻为止，其后与未到的分钟用更暗的未来色。
 static void drawRingTimeline(float rOut, float rIn, float span,
                              uint16_t cIdle, uint16_t cFuture,
                              uint16_t cWalk, uint16_t cRun)
@@ -333,23 +333,8 @@ static void drawRingTimeline(float rOut, float rIn, float span,
     if (rIn >= rOut) return;
     if (span >= 360.0f) span = 360.0f;
 
-    // 深睡期间的增量只在 RTC 上累加总数，没有落到时段里，统一记到当前时段
-    uint32_t sum = 0;
-    for (int i = 0; i < BKT_N; ++i) sum += g_bkt.step[i];
-    const int      cur   = g_bktCur;
-    const uint32_t extra = (g_steps > sum) ? (g_steps - sum) : 0;
-
-    uint16_t seg[BKT_N];
-    for (int i = 0; i < BKT_N; ++i) {
-        const uint32_t s = (uint32_t)g_bkt.step[i] + (i == cur ? extra : 0);
-        const uint32_t r = g_bkt.run[i];
-        if (i > cur)                        seg[i] = cFuture;
-        else if (!s)                        seg[i] = cIdle;
-        else if (r && r * 2 >= s)           seg[i] = cRun;
-        else                                seg[i] = cWalk;
-    }
-
-    const float k = (float)BKT_N / (span > 0.5f ? span : 0.5f);
+    const int   cur = g_bktCur;
+    const float k   = (float)BKT_N / (span > 0.5f ? span : 0.5f);
     const int yBeg = (int)floorf(g_cy - rOut);
     const int yEnd = (int)ceilf (g_cy + rOut);
 
@@ -383,12 +368,19 @@ static void drawRingTimeline(float rOut, float rIn, float span,
                 if (cov > 1.0f) cov = 1.0f;
 
                 const float a = (float)cwHueOf((int)dx, (int)dy);
-                uint16_t c = cFuture;             // 一圈走完仍无对应时段：按未来色
+                uint16_t c = cFuture;
                 if (a < span) {
-                    int b = (int)(a * k);
+                    const float idx = a * k;
+                    int b = (int)idx;
                     if (b < 0) b = 0;
                     if (b >= BKT_N) b = BKT_N - 1;
-                    c = seg[b];
+                    // 当前分钟只涂到此刻，其余按该分钟记录的强度取色
+                    if (b > cur || (b == cur && (idx - (float)b) > g_bktFrac)) {
+                        c = cFuture;
+                    } else {
+                        const uint8_t lv = bktGet(g_bkt.lvl, b);
+                        c = (lv == 2) ? cRun : (lv == 1 ? cWalk : cIdle);
+                    }
                 }
                 ui->writePixel(x, y, shade565(c, (uint32_t)(cov * 255.0f + 0.5f)));
             }
@@ -480,12 +472,12 @@ static void drawMain()
 
     // 双环：外圈是 24 小时活动状态，内圈是目标完成度，外沿贴住屏幕边缘
     const float rOut = (float)g_cx - 2.0f;
-    const float oIn  = rOut - 22.0f;          // 外圈内沿
+    const float oIn  = rOut - 13.0f;          // 外圈内沿
     const float iOut = oIn - 5.0f;            // 内圈外沿
     const float iIn  = iOut - 22.0f;          // 内圈内沿
 
-    // 外圈：0 点在正上方，顺时针走完 24 小时；
-    // 已过的时段区分静止 / 走路 / 跑步，未到的时段用更暗的轨道色
+    // 外圈：0 点在正上方，顺时针走完 24 小时，每分钟一格
+    // 已过的分钟区分静止 / 走路 / 跑步，未到的分钟用更暗的轨道色
     drawRingTimeline(rOut, oIn, 360.0f, C_BTN, C_TRACK, C_ACCENT, C_RUN);
 
     // 内圈：当日目标完成度

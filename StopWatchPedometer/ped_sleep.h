@@ -193,6 +193,17 @@ inline void enter(bool onlyTimer = false)
     esp_deep_sleep_start();
 }
 
+// 深睡里读 RX8130 的时与分（BCD），换算成当天第几分钟；读不到返回 -1
+inline int rtcMinuteOfDay()
+{
+    uint8_t b[3];
+    if (!rawRd(ADDR_RTC, 0x10, b, 3)) return -1;   // 0x10 秒 / 0x11 分 / 0x12 时
+    const int h = (int)((b[2] >> 4) & 0x03) * 10 + (int)(b[2] & 0x0F);
+    const int m = (int)((b[1] >> 4) & 0x07) * 10 + (int)(b[1] & 0x0F);
+    if (h > 23 || m > 59) return -1;
+    return h * 60 + m;
+}
+
 // ------------------------------------------------
 // 静默唤醒：读计数 -> 累加 -> 再睡
 // 返回 0 表示已睡下不返回；1 表示按键被按住（应走完整启动把屏点亮）；
@@ -220,8 +231,14 @@ inline int silentTick()
 
     const uint32_t delta = hwAccumulate(raw);
     g_rtc.steps += delta;
-    if (delta && (b[4] & 0x03) == 2) g_rtc.run += delta;   // 步态：2 = 跑步
-    if (delta) g_rtc.activeSec += SLEEP_TICK_S;
+    const uint8_t gait = (uint8_t)(b[4] & 0x03);   // 0 静止 / 1 步行 / 2 跑步 / 3 未知
+    if (delta) {
+        if (gait == 2) g_rtc.run += delta;
+        g_rtc.activeSec += SLEEP_TICK_S;
+        // 分时明细：这一格记成走路或跑步
+        const int mi = rtcMinuteOfDay();
+        if (mi >= 0) bktPut(g_rtc.bktLvl, mi, (gait == 2) ? 2 : 1);
+    }
     g_rtc.wakes++;
 
     // 每 15 次唤醒（约 5 分钟）查一次电池
@@ -254,6 +271,7 @@ inline int silentTick()
         g_prefs.putUInt("steps", g_rtc.steps);
         g_prefs.putUInt("run",   g_rtc.run);
         g_prefs.putUInt("active", g_rtc.activeSec);
+        g_prefs.putBytes("bkt3", g_rtc.bktLvl, sizeof(g_rtc.bktLvl));
         if (g_rtc.dayKey) g_prefs.putInt("day", g_rtc.dayKey);
     }
 
