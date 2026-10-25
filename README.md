@@ -45,7 +45,8 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 | 按键 | 关机时 | 亮屏时 | 息屏后 | 深睡中 |
 |---|---|---|---|---|
 | 黄键 | — | 短按翻到下一页；长按 1.2 s 回到主页 | 短按点亮屏幕；长按 1.2 s 点亮并回到主页 | 按下唤醒，重启后显示主页 |
-| 蓝键 | — | 短按息屏；长按 0.9 s 清零当日步数 | 短按点亮屏幕；长按 0.9 s 点亮并清零 | 按下唤醒，重启后显示主页；按住不清零 |
+| 蓝键 | — | 短按息屏 | 短按点亮屏幕 | 按下唤醒，重启后显示主页 |
+| 黄键 + 蓝键 | — | 同时按住 10 s，清零当日成绩 | 同时按住 10 s，点亮屏幕并清零 | 按下唤醒，重启后继续按住 10 s 清零 |
 | 电源键 | 单击开机；长按 2 s 进下载 | 双击关机；长按 2 s 进下载 | 单击无反应；长按 2 s 进下载 | 单击无反应；长按 2 s 进下载 |
 
 ## 设置项
@@ -114,7 +115,7 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 ```bash
 esptool --chip esp32s3 -p COM5 -b 460800 write_flash \
   --flash_mode keep --flash_freq keep --flash_size keep \
-  0x0 dist/StopWatch_Pedometer_v2.7.bin
+  0x0 dist/StopWatch_Pedometer_v2.8.bin
 ```
 
 三个 `keep` 用于保留镜像 header 中的 flash 模式、频率与容量设定。省略时 header 被改写为 `qio`，ROM 停在 `mode:QIO` 之后反复复位。

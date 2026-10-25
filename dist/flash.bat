@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-set "BIN=StopWatch_Pedometer_v2.7.bin"
+set "BIN=StopWatch_Pedometer_v2.8.bin"
 set "APP=app_only.bin"
 set "KEEP="
 if /i "%~2"=="keep" set "KEEP=1"

@@ -6,7 +6,7 @@
 //  · 计步: BMI270 硬件计步器（feature engine），休眠时继续计数
 //  · 休眠: 息屏静止后进入 LP2 深睡，每 20 s 静默醒来读一次计数，约 90 µA
 //  · 界面: 贴边环形进度 / 今日数据 / 近 7 天历史 / 设置 / 时间 / 调试
-//  · 操作: 黄键切页、蓝键息屏、蓝键长按清零、电源键亮屏、双击关机、
+//  · 操作: 黄键切页、蓝键息屏、两键同按 10 s 清零、电源键亮屏、双击关机、
 //          左右滑动切页、上下滑动翻行、点按 ± 改设置
 // ============================================================
 
@@ -1046,14 +1046,10 @@ void loop()
             aLong = false;
         }
 
-        // 蓝键长按 0.9 s：今日步数清零
+        // 蓝键短按息屏；长按不执行动作，清零改由两键同按触发
         if (M5.BtnB.pressedFor(900) && !bLong) {
             bLong = true;
-            clearToday();                // 连同硬件计数基准一起归零，否则会立刻加回旧步数
-            cadenceClear();
             touchActivity(now);
-            feedback(1);
-            redraw = true;
         }
         if (M5.BtnB.wasReleased()) {
             if (!bLong && !wakeConsumed) {                   // 短按：立即息屏
@@ -1062,6 +1058,24 @@ void loop()
                 redraw = true;
             }
             bLong = false;
+        }
+
+        // 黄键与蓝键同时按住 10 s：清零当日成绩。
+        // 单键长按曾用于清零，误触概率高，改为组合键 + 10 s。
+        static uint32_t bothMs   = 0;
+        static bool     bothDone = false;
+        if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) {
+            if (bothMs == 0) bothMs = now;
+            if (!bothDone && now - bothMs >= 10000) {
+                bothDone = true;
+                clearToday();            // 连同硬件计数基准一起归零，否则会立刻加回旧步数
+                cadenceClear();
+                feedback(1);
+                redraw = true;
+            }
+        } else {
+            bothMs   = 0;
+            bothDone = false;
         }
 
         if (!anyDown) wakeConsumed = false;
