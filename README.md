@@ -63,18 +63,6 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 
 设置存于 NVS 命名空间 `pedo2`，掉电保留。步幅按身高 × 0.415 计算，消耗按 0.53 kcal/(kg·km) 计算。
 
-## 技术栈
-
-| 部分 | 实现方式 |
-|---|---|
-| 绘图 | M5GFX（LovyanGFX）驱动 CO5300，QSPI 80 MHz。468×468 RGB565 画布置于 PSRAM，双缓冲，整屏推送。文字采用预生成点阵字模，字符集由 `tools/genfont.py` 从源码字符串中提取 |
-| 触摸 | CST820，I2C 轮询。手势由固件判定：按下时先确定主轴，纵向位移用于列表滚动，横向位移用于页面切换，滚动结束时吸附至整项 |
-| 计步 | BMI270 片上 feature engine 完成计数，MCU 每秒读取一次寄存器并累加差值，不执行软件峰值检测 |
-| 计时 | RX8130 RTC，I2C，掉电继续走时。每秒读取一次，用于显示与跨天判断 |
-| 电源 | M5PM1 提供三路 LDO，M5IOE1 扩展 IO。显示屏与扬声器位于独立供电轨，可单独断电。ESP32-S3 采用 deep sleep，由 ext1 按键唤醒 |
-| 存储 | 设置与当日成绩存于 NVS。修改后标记为脏，静置 700 ms 后写入，避免连续点按造成反复擦写 |
-| 字体 | 点阵字模随固件编译，不依赖文件系统 |
-
 ## 休眠与续航
 
 息屏与深睡分两级：无操作 15 s（可调）后亮度归零，再经 45 s（可调）进入 deep sleep。
@@ -88,8 +76,6 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 | 屏幕全亮 | 约 154 mA |
 
 450 mAh 电池在深睡电流下理论续航 70 天。计入自放电、转换效率与温度影响，按 55–60 天估计。
-
-深睡电流主要来自 BMI270（约 200 µA），其次为 3.3 V 常电轨上的 PMIC、触摸芯片与漏电（约 40 µA），定时唤醒摊销约 15 µA。BMI270 降至 25 Hz 并开启 `adv_power_save` 可压至 10 µA 量级，但其 25 项步数参数按 100 Hz 整定，降采样后精度下降，故保持 100 Hz。
 
 接入 USB 时不进入深睡，便于调试。
 
@@ -113,38 +99,27 @@ esptool --chip esp32s3 -p COM5 -b 460800 write_flash \
 
 ## 编译
 
-需要 arduino-cli 与 esp32 core 3.3.7。依赖库由脚本获取：
+需要 arduino-cli、esp32 core 3.3.7 与 Python 3。
+
+Windows 下双击 `build.bat`，或执行：
 
 ```bash
-python tools/bootstrap.py --build
+python tools/build.py
 ```
 
-脚本将 M5Unified 0.2.27 与 M5GFX 0.2.34 克隆至 `tools/libs/`，对 M5GFX 应用 `docs/patches/0001-co5300-wakeup-timing.patch`，随后执行编译。
+脚本获取 M5Unified 0.2.27 与 M5GFX 0.2.34 至 `tools/libs/`，应用 `docs/patches/0001-co5300-wakeup-timing.patch`，编译至 `out/`，输出固件大小与 SHA256。依赖已存在时跳过获取与打补丁。
 
-该补丁修改 CO5300 的唤醒时序：复位释放后的等待时间由 2 ms 增至 120 ms，SLPOUT 移至初始化表首位。未应用该补丁时，冷启动出现间歇性黑屏或花屏。
+该补丁修正 CO5300 的唤醒时序（复位释放后等待 120 ms，SLPOUT 居首）；未应用时冷启动出现间歇性黑屏。
 
 手动编译：
 
 ```bash
 arduino-cli compile \
   --fqbn "esp32:esp32:esp32s3box:PartitionScheme=app3M_fat9M_16MB,DebugLevel=none" \
-  --libraries tools/libs --output-dir out_dbg StopWatchPedometer
+  --libraries tools/libs --output-dir out StopWatchPedometer
 ```
 
-板卡为 `esp32s3box`。通用 `esp32s3` 的 `build.memory_type` 为 `qio_qspi`，将链接 QSPI 版 IDF 库，OPI PSRAM 无法启动，表现为黑屏与 `ets_loader.c 78` 复位循环。
-
-## 计步实现
-
-BMI270 的步数功能由片上 feature engine 实现。固件在 `M5.begin()` 返回后执行以下初始化：
-
-1. 软复位，清除 M5Unified 上传的默认配置；
-2. 分块写入 8192 字节 legacy 配置包，等待 `INTERNAL_STATUS.init_ok`；
-3. 配置加速度计：100 Hz、±2 g、仅启用加速度通道、关闭辅机 I2C；
-4. 置位 page 4 字节 1 的 bit4（`en_counter`），启动计数器。
-
-legacy 为 Bosch 针对手机场景提供的配置包，其步数参数按口袋中的躯干起伏整定。M5Unified 默认上传 base 配置包，参数按腕戴整定，摆臂幅度较大时产生多计。写入或 `init_ok` 失败时，固件重新上传 base 配置包并回退至腕戴模式。
-
-计数器读数位于 feature page 0 的 `0x30..0x33`（32 位小端），每秒读取一次并取差值累加。
+板卡为 `esp32s3box`；通用 `esp32s3` 使用 `qio_qspi` 内存类型，OPI PSRAM 无法启动。
 
 ## 串口命令
 
