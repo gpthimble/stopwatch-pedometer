@@ -76,7 +76,8 @@ def fetch(name, url, ref, patch):
         print(f"[skip] {name} {ref} 已存在")
     else:
         os.makedirs(LIBS, exist_ok=True)
-        if run(["git", "clone", "--depth", "1", "--branch", ref, url, dst]) != 0:
+        if run(["git", "-c", "advice.detachedHead=false",
+                "clone", "--depth", "1", "--branch", ref, url, dst]) != 0:
             fail(f"{name} 获取失败，检查网络或手动放入 tools/libs/{name}")
         print(f"[ok] {name} {ref}")
 
