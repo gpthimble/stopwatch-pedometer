@@ -1044,9 +1044,8 @@ void loop()
         if (!anyDown) wakeConsumed = false;
 
         // ---------- 电源键：单击亮屏 / 双击关机 ----------
-        // 注意：M5PM1 的 PEK 中断在固件中未使能，getKeyState() 读的是
-        // IRQ_STATUS3 的锁存位，恒为 0，故以下判定当前不产生动作：
-        // 单击不亮屏，双击不关机。实测行为见 README「已知限制」。
+        // M5PM1 的 PEK 中断未使能，getKeyState() 读 IRQ_STATUS3 的锁存位，
+        // 恒为 0，本段不产生动作。
         static uint32_t pekLast = 0, pekPoll = 0;
         static bool     pekArmed = false;
         if (now - pekPoll >= 40) {
