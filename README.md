@@ -1,6 +1,6 @@
 # StopWatch 计步器
 
-M5Stack StopWatch（C152）的计步固件。计步交给 BMI270 的片上引擎，MCU 不采样加速度，深睡期间照常计数。
+M5Stack StopWatch（C152）的计步固件。步数由 BMI270 片上 feature engine 统计，MCU 不读取加速度数据，深睡期间继续计数。
 
 <img src="docs/screenshots/p0_main.png" width="260">
 
@@ -10,28 +10,28 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 
 ## 功能
 
-- 主页：环形完成度、时间日期、超大号步数、距离与消耗、四段电量条
+- 主页：环形完成度、时间日期、步数、距离与消耗、四段电量条
 - 今日数据：距离、消耗、活跃时长、步频、完成度
 - 近 7 天柱状图，今天固定在最右格，未记录的日期留空
-- 设置 9 项，像素级跟手滚动
+- 设置 9 项，列表滚动跟手
 - 对时：日期三列滚轮 + 24 小时表盘，写入 RX8130
 - 息屏、深睡、震动与提示音
 
 ## 页面
 
-只有主页、今日数据、近 7 天、设置参与左右循环；对时页从设置里的「对时」进入。
+主页、今日数据、近 7 天、设置四页左右循环。对时页由设置中的「对时」进入。
 
 | 主页 | 今日数据 | 近 7 天 | 设置 |
 |---|---|---|---|
 | <img src="docs/screenshots/p0_main.png" width="150"> | <img src="docs/screenshots/p1_today.png" width="150"> | <img src="docs/screenshots/p2_week.png" width="150"> | <img src="docs/screenshots/p3_settings.png" width="150"> |
 
-对时页，从设置进入，左滑进下一层（日期 → 调时 → 调分），点按确认并写 RTC：
+对时页从设置进入，左滑依次切换日期、时、分，点按确认并写入 RTC：
 
 <img src="docs/screenshots/p4_time.png" width="260">
 
 ## 操作
 
-屏幕是圆的，四角在可视区外，页面上不放按钮，全靠手势。
+屏幕为圆形，四角位于可视区外。界面不设按钮，操作只用手势。
 
 | 手势 | 作用 |
 |---|---|
@@ -61,14 +61,14 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 | 对时 | 进入对时页 | — | — |
 | 清零今日 | 连点两次，5 s 内有效 | — | — |
 
-存在 NVS 命名空间 `pedo2`，断电不丢。步幅按身高 × 0.415 推算，消耗按 0.53 kcal/(kg·km)。
+设置存于 NVS 命名空间 `pedo2`，掉电保留。步幅按身高 × 0.415 计算，消耗按 0.53 kcal/(kg·km) 计算。
 
 ## 技术栈
 
 | 部分 | 做法 |
 |---|---|
 | 绘图 | M5GFX（LovyanGFX）驱动 CO5300，QSPI 80 MHz。468×468 RGB565 画布放 PSRAM，双缓冲，整屏推送。文字是预生成点阵字模，由 `tools/genfont.py` 从源码字符串里提取用到的字 |
-| 触摸 | CST820，I2C 轮询。手势判定自己做：按下先锁主轴，纵向只滚列表、横向只切页，两者不互相干扰；滚动带吸附 |
+| 触摸 | CST820，I2C 轮询。手势在固件内判定：按下时先锁定主轴，纵向滚动列表、横向切换页面，滚动带吸附 |
 | 计步 | BMI270 片上 feature engine，硬件计数。MCU 每秒读一次寄存器取差值，不跑软件峰值检测 |
 | 计时 | RX8130 RTC，I2C，掉电走时。每秒读一次用于显示与跨天判断 |
 | 电源 | M5PM1 三路 LDO，M5IOE1 扩展 IO。屏幕和扬声器在独立轨上，可以单独断电；ESP32-S3 用 deep sleep + ext1 按键唤醒 |
@@ -89,7 +89,7 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 
 450 mAh 电池深睡理论 70 天。计入自放电、转换效率和温度，按 **55–60 天** 估。
 
-深睡电流主要是 BMI270（约 200 µA），其次是 3.3 V 轨常电的 PMIC、触摸芯片和漏电（约 40 µA），定时唤醒摊销约 15 µA。把 BMI270 降到 25 Hz 并开 `adv_power_save` 能压到 10 µA 量级，但那 25 个步数参数按 100 Hz 整定，降采样后精度会变，这里保精度。
+深睡电流主要是 BMI270（约 200 µA），其次是 3.3 V 轨常电的 PMIC、触摸芯片和漏电（约 40 µA），定时唤醒摊销约 15 µA。BMI270 降到 25 Hz 并开启 `adv_power_save` 可降至 10 µA 量级，但 25 个步数参数按 100 Hz 整定，降采样后精度下降，因此维持 100 Hz。
 
 插 USB 时不进深睡，方便调试。
 
@@ -103,7 +103,7 @@ esptool --chip esp32s3 -p COM5 -b 460800 write_flash \
   0x0 dist/StopWatch_Pedometer_v2.4.bin
 ```
 
-三个 `keep` 不能省。镜像 header 已是 DIO / 80 MHz / 16 MB，强制改成 `qio` 会让 ROM 卡在 `mode:QIO` 之后反复复位。
+三个 `keep` 必须保留：镜像 header 已为 DIO / 80 MHz / 16 MB，改成 `qio` 会使 ROM 停在 `mode:QIO` 之后反复复位。
 
 进下载模式：USB 接电脑，长按电源键约 2 s。网页烧录用 <https://espressif.github.io/esp-launcher/>，地址 `0x0`、Size `16MB`、Mode `DIO`、Freq `80MHz`。烧完短按电源键重启。
 
@@ -129,7 +129,7 @@ arduino-cli compile \
   --libraries tools/libs --output-dir out_dbg StopWatchPedometer
 ```
 
-**板卡必须用 `esp32s3box`，不能用通用 `esp32s3`。** 后者 `build.memory_type` 是 `qio_qspi`，会链接 QSPI 版 IDF 库，OPI PSRAM 起不来，表现为黑屏加 `ets_loader.c 78` 复位循环。
+板卡为 `esp32s3box`。通用 `esp32s3` 的 `build.memory_type` 是 `qio_qspi`，会链接 QSPI 版 IDF 库，OPI PSRAM 无法启动，表现为黑屏与 `ets_loader.c 78` 复位循环。
 
 ## 计步实现
 
@@ -140,7 +140,7 @@ BMI270 的步数功能跑在片上 feature engine 里。固件在 `M5.begin()` �
 3. 配加速度计：100 Hz、±2 g、只开加速度通道、关辅机 I2C
 4. 置 page 4 字节 1 的 bit4（`en_counter`），启动计数器
 
-legacy 是 Bosch 给手机场景的配置包，步数按口袋里的躯干起伏整定。M5Unified 默认上传的是 base 配置，按腕戴整定，摆臂幅度大时会多计，所以这里换掉。上传或 `init_ok` 失败会自动重传 base 配置退回腕戴，不会失去计步。
+legacy 是 Bosch 针对手机场景的配置包，按口袋中的躯干起伏整定。M5Unified 默认上传 base 配置，按腕戴整定，摆臂幅度大时会多计。上传或 `init_ok` 失败时自动重传 base 配置，退回腕戴模式。
 
 计数器读数在 feature page 0 的 `0x30..0x33`（32 位小端），每秒读一次，取差值累加。
 
