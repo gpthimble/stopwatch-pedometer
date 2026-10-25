@@ -31,7 +31,7 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 
 ## 操作
 
-屏幕为圆形，四角位于可视区外。界面不设按钮，操作仅通过手势完成。
+屏幕为圆形，四角位于可视区外。页面内不设按钮，操作由手势与侧键完成。
 
 | 手势 | 作用 |
 |---|---|
@@ -43,9 +43,8 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 |---|---|
 | 黄键短按 / 长按 1.2 s | 下一页 / 返回主页 |
 | 蓝键短按 / 长按 0.9 s | 息屏 / 当日步数清零 |
-| 电源键单击 / 双击 | 唤醒显示屏 / 关机 |
 
-仅按键可唤醒显示屏，触摸不唤醒。
+唤醒显示屏仅响应黄键与蓝键，触摸不唤醒。深睡唤醒源同样只有这两个键。电源键不参与显示控制，单击不唤醒显示屏。
 
 ## 设置项
 
@@ -114,7 +113,7 @@ esptool --chip esp32s3 -p COM5 -b 460800 write_flash \
 
 三个 `keep` 用于保留镜像 header 中的 flash 模式、频率与容量设定。省略时 header 被改写为 `qio`，ROM 停在 `mode:QIO` 之后反复复位。
 
-进入下载模式：连接 USB，长按电源键约 2 s。网页烧写使用 <https://espressif.github.io/esp-launcher/>，地址 `0x0`、Size `16MB`、Mode `DIO`、Freq `80MHz`。烧写完成后短按电源键重启。
+进入下载模式：连接 USB，长按电源键约 2 s。网页烧写使用 <https://espressif.github.io/esp-launcher/>，地址 `0x0`、Size `16MB`、Mode `DIO`、Freq `80MHz`。烧写完成后重新上电。
 
 整片擦除将清除设置与步数记录。仅写入 `app_only` 至 `0x10000` 时保留。
 
@@ -172,6 +171,7 @@ python tools/devtool.py seq COM3 "3" page3.png
 - 跨天清零依赖 RTC，RTC 未校准时不会自动清零。
 - 深睡唤醒需重建 QSPI 面板，自唤醒至可操作约 0.7 s。
 - 计步每秒轮询一次，步频较高时显示值每次增加两级，累计数值不受影响。
+- 电源键单击不唤醒显示屏。
 - 目标默认 8000 步；界面截图中该设置已改为 10000。
 
 ## 参考项目
@@ -179,7 +179,7 @@ python tools/devtool.py seq COM3 "3" page3.png
 | 项目 | 用途 |
 |---|---|
 | [boschsensortec/BMI270_SensorAPI](https://github.com/boschsensortec/BMI270_SensorAPI) | BMI270 配置包、feature 页地址、初始化流程 |
-| [m5stack/M5Unified](https://github.com/m5stack/M5Unified) | 板级初始化、I2C、电源按键 |
+| [m5stack/M5Unified](https://github.com/m5stack/M5Unified) | 板级初始化、I2C |
 | [m5stack/M5GFX](https://github.com/m5stack/M5GFX)（LovyanGFX） | 显示驱动与绘图，应用唤醒时序补丁 |
 | [m5stack/M5StopWatch-UserDemo](https://github.com/m5stack/M5StopWatch-UserDemo) | M5PM1 / M5IOE1 / CO5300 的寄存器用法参考 |
 | [m5stack/M5StopWatch-PowerDemo](https://github.com/m5stack/M5StopWatch-PowerDemo) | 电源分轨与深睡实测数据 |
