@@ -95,6 +95,8 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 
 ## 刷入
 
+直接下载：[Releases](https://github.com/gpthimble/stopwatch-pedometer/releases/latest)。
+
 完整镜像写 **`0x0`**（bootloader 在 0x0，不是老款 ESP32 的 0x1000）；只升级 app 写 `0x10000`。
 
 ```bash
