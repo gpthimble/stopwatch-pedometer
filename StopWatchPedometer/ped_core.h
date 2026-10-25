@@ -31,6 +31,14 @@ static constexpr bool POWER_LED_ON = false;
 
 #define HIST_DAYS 7
 
+// 今日按 30 分钟一格，共 48 格，用于主页色环按时间顺序着色
+#define BKT_N 48
+struct DayBuckets
+{
+    uint16_t step[BKT_N];
+    uint16_t run[BKT_N];
+};
+
 // ------------------------------------------------------------
 // 用户设置（可在设备内直接修改并保存）
 // ------------------------------------------------------------
@@ -45,6 +53,8 @@ struct Settings
     uint8_t  sleepAfterS = 45;     // 息屏后进入深睡的秒数
     uint16_t themeHue    = 165;    // 主题色色相 0..359（环、数值、选中态）
     uint16_t runHue      = 12;     // 强调色色相 0..359（跑步段）
+    uint8_t  themeVal    = 92;     // 主题色亮度 30..100（%）
+    uint8_t  runVal      = 100;    // 强调色亮度 30..100（%）
 };
 
 // 每日历史
@@ -71,6 +81,8 @@ struct SleepState
     uint8_t  lowBat;
     uint8_t  failCnt;    // 静默唤醒连续失败次数，达到 3 次则停用深睡
     uint8_t  dbgBoot;    // 调试：强制下次唤醒走完整启动，不跑静默通道
+    uint16_t bktStep[BKT_N];   // 今日各时段步数
+    uint16_t bktRun[BKT_N];    // 其中跑步步数
 };
 RTC_DATA_ATTR SleepState g_rtc;
 
@@ -84,6 +96,7 @@ DayRec   g_hist[HIST_DAYS];
 
 uint32_t g_steps      = 0;   // 今日步数
 uint32_t g_runSteps   = 0;   // 今日其中判定为跑步的步数
+DayBuckets g_bkt;            // 今日分时明细（清零由 bucketClear 负责）
 uint32_t g_activeSec  = 0;   // 今日活跃秒数
 int32_t  g_dayKey     = 0;   // 今日日期键
 uint32_t g_savedSteps = 0xFFFFFFFFu;
@@ -190,8 +203,8 @@ static inline uint16_t hsv565(uint16_t h, float s, float v)
     return (uint16_t)(((R & 0xF8) << 8) | ((G & 0xFC) << 3) | (B >> 3));
 }
 
-static inline uint16_t themeColor() { return hsv565(g_cfg.themeHue, 0.90f, 0.92f); }
-static inline uint16_t runColor()   { return hsv565(g_cfg.runHue,   0.86f, 1.00f); }
+static inline uint16_t themeColor() { return hsv565(g_cfg.themeHue, 0.90f, g_cfg.themeVal / 100.0f); }
+static inline uint16_t runColor()   { return hsv565(g_cfg.runHue,   0.86f, g_cfg.runVal   / 100.0f); }
 
 // 步幅由身高推算：行走步幅 ≈ 身高 × 0.415
 static inline float strideMeters()
@@ -262,6 +275,8 @@ static void cfgLoad()
     g_cfg.sleepAfterS = g_prefs.getUChar ("slps",    g_cfg.sleepAfterS);
     g_cfg.themeHue    = g_prefs.getUShort("hue1",    g_cfg.themeHue);
     g_cfg.runHue      = g_prefs.getUShort("hue2",    g_cfg.runHue);
+    g_cfg.themeVal    = g_prefs.getUChar ("val1",    g_cfg.themeVal);
+    g_cfg.runVal      = g_prefs.getUChar ("val2",    g_cfg.runVal);
 
     // 容错
     if (g_cfg.goal < 500 || g_cfg.goal > 60000) g_cfg.goal = 8000;
@@ -273,6 +288,8 @@ static void cfgLoad()
     if (g_cfg.sleepAfterS < 10) g_cfg.sleepAfterS = 45;
     if (g_cfg.themeHue >= 360) g_cfg.themeHue = 165;
     if (g_cfg.runHue >= 360) g_cfg.runHue = 12;
+    if (g_cfg.themeVal < 30 || g_cfg.themeVal > 100) g_cfg.themeVal = 92;
+    if (g_cfg.runVal   < 30 || g_cfg.runVal   > 100) g_cfg.runVal   = 100;
 
     // 历史记录的字段在 v2.5 增加了跑步步数，旧键的长度对不上，读新键
     if (g_prefs.getBytesLength("hist2") == sizeof(g_hist)) {
@@ -291,6 +308,8 @@ static void cfgSave()
     g_prefs.putUChar ("slps",    g_cfg.sleepAfterS);
     g_prefs.putUShort("hue1",    g_cfg.themeHue);
     g_prefs.putUShort("hue2",    g_cfg.runHue);
+    g_prefs.putUChar ("val1",    g_cfg.themeVal);
+    g_prefs.putUChar ("val2",    g_cfg.runVal);
 }
 
 // ------------------------------------------------------------
@@ -396,6 +415,39 @@ static uint32_t histAvg()
 }
 
 // ------------------------------------------------------------
+// 分时明细：每 30 分钟一格。当前格由主循环每秒刷新一次，
+// 累加步数时直接用缓存值，避免每步都去读一次 RTC。
+// ------------------------------------------------------------
+static int bucketNow()
+{
+    if (!M5.Rtc.isEnabled()) return 0;
+    auto dt = M5.Rtc.getDateTime();
+    if (dt.date.year < 2024) return 0;
+    int b = (int)dt.time.hours * 2 + (dt.time.minutes >= 30 ? 1 : 0);
+    if (b < 0 || b >= BKT_N) b = 0;
+    return b;
+}
+
+int g_bktCur = 0;
+
+static void bucketTick()
+{
+    g_bktCur = bucketNow();
+}
+
+static void bucketClear()
+{
+    memset(&g_bkt, 0, sizeof(g_bkt));
+}
+
+static void bktAdd(uint16_t *arr, uint32_t n)
+{
+    if (!n) return;
+    const uint32_t v = (uint32_t)arr[g_bktCur] + n;
+    arr[g_bktCur] = (v > 65535u) ? 65535u : (uint16_t)v;
+}
+
+// ------------------------------------------------------------
 // 今日数据
 // ------------------------------------------------------------
 static void loadToday()
@@ -406,6 +458,7 @@ static void loadToday()
     g_activeSec = g_prefs.getUInt("active", 0);
 
     int32_t today = todayKey();
+    bool    rolled = false;
     if (today != 0) {
         if (savedDay != 0 && savedDay != today) {
             histArchive(savedDay, g_steps, g_runSteps);
@@ -414,11 +467,20 @@ static void loadToday()
             g_runSteps = 0;
             g_activeSec = 0;
             g_nextMilestone = 1000;
+            rolled = true;
         }
         g_dayKey = today;
         g_prefs.putInt("day", today);
     } else {
         g_dayKey = savedDay;
+    }
+
+    // 跨天时桶已经被清空，不能再把昨天的那份读回来
+    if (!rolled && g_prefs.getBytesLength("bkt") == sizeof(g_bkt)) {
+        g_prefs.getBytes("bkt", &g_bkt, sizeof(g_bkt));
+    }
+    else if (rolled) {
+        bucketClear();
     }
     g_savedSteps = g_steps;
 }
@@ -429,12 +491,15 @@ static void saveToday(bool force = false)
     g_prefs.putUInt("steps", g_steps);
     g_prefs.putUInt("run",   g_runSteps);
     g_prefs.putUInt("active", g_activeSec);
+    g_prefs.putBytes("bkt", &g_bkt, sizeof(g_bkt));
     if (g_dayKey) g_prefs.putInt("day", g_dayKey);
     // RTC 内存同步：深睡醒来合并时靠它取较大值，
     // 两处长期不一致会让归档拿到旧值（0），把历史柱状图抹平
     g_rtc.steps     = g_steps;
     g_rtc.run       = g_runSteps;
     g_rtc.activeSec = g_activeSec;
+    memcpy(g_rtc.bktStep, g_bkt.step, sizeof(g_bkt.step));
+    memcpy(g_rtc.bktRun,  g_bkt.run,  sizeof(g_bkt.run));
     if (g_dayKey) g_rtc.dayKey = g_dayKey;
     g_savedSteps = g_steps;
 }
@@ -450,6 +515,7 @@ static void rolloverIfNeeded()
         g_steps = 0;
         g_runSteps = 0;
         g_activeSec = 0;
+        bucketClear();
         cadenceClear();
         g_nextMilestone = 1000;
         g_dayKey = k;
@@ -473,6 +539,7 @@ static void stepsAdd(uint32_t n)
 {
     if (n == 0) return;
     g_steps += n;
+    bktAdd(g_bkt.step, n);
     g_lastStepMs = millis();
     if (g_steps >= g_nextMilestone) {
         g_nextMilestone = ((g_steps / 1000) + 1) * 1000;

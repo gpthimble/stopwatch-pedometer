@@ -300,6 +300,102 @@ static void drawRingAA(float rOut, float rIn, float a0, float span,
     }
 }
 
+// 快速 atan2，误差约 0.004 rad，用于按角度取色
+static inline float cwAtan2(float y, float x)
+{
+    const float ax = fabsf(x), ay = fabsf(y);
+    const float a  = (ax > ay) ? ay / (ax + 1e-9f) : ax / (ay + 1e-9f);
+    const float s  = a * a;
+    float r = ((-0.0464964749f * s + 0.15931422f) * s - 0.327622764f) * s * a + a;
+    if (ay > ax)  r = 1.57079637f - r;
+    if (x < 0.0f) r = 3.14159274f - r;
+    if (y < 0.0f) r = -r;
+    return r;
+}
+
+// 屏幕坐标 → 色相：0° 在正上方，顺时针递增
+static inline int cwHueOf(int dx, int dy)
+{
+    int h = (int)lroundf(cwAtan2((float)dx, (float)(-dy)) * 57.29578f);
+    if (h < 0)   h += 360;
+    if (h >= 360) h -= 360;
+    return h;
+}
+
+// 时间轴色环：整圈按当天 48 个时段等分，0 点在正上方。
+// 已过的时段按运动类型取色：无步数 = 静止色，跑步占多数 = 跑步色，其余 = 走路色；
+// 未到的时段用更暗的未来色，环上因此有一道可见的时间分界。
+static void drawRingTimeline(float rOut, float rIn, float span,
+                             uint16_t cIdle, uint16_t cFuture,
+                             uint16_t cWalk, uint16_t cRun)
+{
+    if (rIn < 0.0f) rIn = 0.0f;
+    if (rIn >= rOut) return;
+    if (span >= 360.0f) span = 360.0f;
+
+    // 深睡期间的增量只在 RTC 上累加总数，没有落到时段里，统一记到当前时段
+    uint32_t sum = 0;
+    for (int i = 0; i < BKT_N; ++i) sum += g_bkt.step[i];
+    const int      cur   = g_bktCur;
+    const uint32_t extra = (g_steps > sum) ? (g_steps - sum) : 0;
+
+    uint16_t seg[BKT_N];
+    for (int i = 0; i < BKT_N; ++i) {
+        const uint32_t s = (uint32_t)g_bkt.step[i] + (i == cur ? extra : 0);
+        const uint32_t r = g_bkt.run[i];
+        if (i > cur)                        seg[i] = cFuture;
+        else if (!s)                        seg[i] = cIdle;
+        else if (r && r * 2 >= s)           seg[i] = cRun;
+        else                                seg[i] = cWalk;
+    }
+
+    const float k = (float)BKT_N / (span > 0.5f ? span : 0.5f);
+    const int yBeg = (int)floorf(g_cy - rOut);
+    const int yEnd = (int)ceilf (g_cy + rOut);
+
+    for (int y = yBeg; y <= yEnd; ++y) {
+        if (y < g_bandY0 || y >= g_bandY1) continue;
+        const float dy = (float)y + 0.5f - (float)g_cy;
+        const float oo = rOut * rOut - dy * dy;
+        if (oo <= 0.0f) continue;
+
+        const float xo = sqrtf(oo);
+        const float ii = rIn * rIn - dy * dy;
+        const float xi = (ii > 0.0f) ? sqrtf(ii) : 0.0f;
+
+        for (int side = 0; side < 2; ++side) {
+            const float lo = (side == 0) ? (g_cx - xo) : (g_cx + xi);
+            const float hi = (side == 0) ? (g_cx - xi) : (g_cx + xo);
+            int xs = (int)floorf(lo);
+            int xe = (int)ceilf (hi);
+            if (xs < 0) xs = 0;
+            if (xe > g_w - 1) xe = g_w - 1;
+
+            for (int x = xs; x <= xe; ++x) {
+                const float dx = (float)x + 0.5f - (float)g_cx;
+                const float r  = sqrtf(dx * dx + dy * dy);
+
+                float cov = 0.5f + (rOut - r);
+                if (cov <= 0.0f) continue;
+                const float cin = 0.5f + (r - rIn);
+                if (cin < cov) cov = cin;
+                if (cov <= 0.0f) continue;
+                if (cov > 1.0f) cov = 1.0f;
+
+                const float a = (float)cwHueOf((int)dx, (int)dy);
+                uint16_t c = cFuture;             // 一圈走完仍无对应时段：按未来色
+                if (a < span) {
+                    int b = (int)(a * k);
+                    if (b < 0) b = 0;
+                    if (b >= BKT_N) b = BKT_N - 1;
+                    c = seg[b];
+                }
+                ui->writePixel(x, y, shade565(c, (uint32_t)(cov * 255.0f + 0.5f)));
+            }
+        }
+    }
+}
+
 // 圆形填充，边缘抗锯齿
 static void fillCircleAA(float ccx, float ccy, float r, uint16_t col)
 {
@@ -382,24 +478,20 @@ static void drawMain()
     const float prog = g_cfg.goal ? (float)g_steps / (float)g_cfg.goal : 0.0f;
     const float p    = prog > 1.0f ? 1.0f : prog;
 
-    // 环形进度：外沿贴住屏幕边缘
+    // 双环：外圈是 24 小时活动状态，内圈是目标完成度，外沿贴住屏幕边缘
     const float rOut = (float)g_cx - 2.0f;
-    const float th   = 26.0f;
-    const float rIn  = rOut - th;
+    const float oIn  = rOut - 22.0f;          // 外圈内沿
+    const float iOut = oIn - 5.0f;            // 内圈外沿
+    const float iIn  = iOut - 22.0f;          // 内圈内沿
 
+    // 外圈：0 点在正上方，顺时针走完 24 小时；
+    // 已过的时段区分静止 / 走路 / 跑步，未到的时段用更暗的轨道色
+    drawRingTimeline(rOut, oIn, 360.0f, C_BTN, C_TRACK, C_ACCENT, C_RUN);
+
+    // 内圈：当日目标完成度
     uint16_t cFill = C_ACCENT;
     if (p > 0.85f) cFill = lerp565(C_ACCENT, C_GOLD, (p - 0.85f) / 0.15f);
-    const float span = 360.0f * p;
-    drawRingAA(rOut, rIn, -90.0f, span, C_TRACK, cFill);
-
-    // 进度弧的末端按跑步步数占比叠一段强调色
-    float runFrac = (g_steps > 0) ? (float)g_runSteps / (float)g_steps : 0.0f;
-    if (runFrac > 1.0f) runFrac = 1.0f;
-    const float runSpan = span * runFrac;
-    if (runSpan > 0.8f) {
-        drawRingAA(rOut, rIn, -90.0f + span - runSpan, runSpan,
-                   C_TRACK, C_RUN, false);
-    }
+    drawRingAA(iOut, iIn, -90.0f, 360.0f * p, C_TRACK, cFill);
 
     const bool hasRtc = M5.Rtc.isEnabled() && rtcValid();
 
@@ -440,7 +532,7 @@ static void drawMain()
     }
 
     // 底部电量标志（只有图标，居中）
-    drawBattery(g_cx, g_cy + 180, g_battery, g_usbPower);
+    drawBattery(g_cx, g_cy + 168, g_battery, g_usbPower);
 }
 
 // ------------------------------------------------------------
@@ -853,6 +945,7 @@ static void clearToday()
     g_steps     = 0;
     g_runSteps  = 0;
     g_activeSec = 0;
+    bucketClear();
     g_hwSteps   = 0;
     g_nextMilestone = 1000;
     g_rtc.steps     = 0;
@@ -1047,6 +1140,10 @@ static void drawTime()
 static int   g_colTarget = 0;      // 0 主题色 / 1 强调色
 static float g_colHue    = 0.0f;   // 当前色相，保留连续值以便跟手
 static float g_colPrev   = 0.0f;   // 上一帧角度，用于求增量
+static int   g_colVal    = 92;     // 当前亮度 30..100（%）
+static bool  g_valDrag   = false;  // 中心圆拖动中
+static int   g_valY0     = 0;      // 拖动起点
+static int   g_valV0     = 92;     // 拖动起始亮度
 
 static float colHueWrapped()
 {
@@ -1058,54 +1155,112 @@ static float colHueWrapped()
 static void colorApply()
 {
     const uint16_t h = (uint16_t)lroundf(colHueWrapped()) % 360;
-    if (g_colTarget == 0) g_cfg.themeHue = h;
-    else                  g_cfg.runHue   = h;
+    if (g_colTarget == 0) { g_cfg.themeHue = h; g_cfg.themeVal = (uint8_t)g_colVal; }
+    else                  { g_cfg.runHue   = h; g_cfg.runVal   = (uint8_t)g_colVal; }
     applyTheme();
     cfgTouch();
+}
+
+// 一行内的一段环带：逐像素取色，同色相邻像素合并成一条横线
+static void cwRow(int y, int xa, int xb, int dy, const uint16_t *lut)
+{
+    if (xa > xb) return;
+    int      runX = xa;
+    uint16_t runC = lut[cwHueOf(xa - g_cx, dy)];
+    for (int x = xa + 1; x <= xb; ++x) {
+        const uint16_t c = lut[cwHueOf(x - g_cx, dy)];
+        if (c == runC) continue;
+        ui->writeFastHLine(runX, y, x - runX, runC);
+        runX = x;
+        runC = c;
+    }
+    ui->writeFastHLine(runX, y, xb + 1 - runX, runC);
+}
+
+// 细弧：在环带内按角度取像素，用于亮度指示（a1 = 360 时画满圈）
+static void ringArcFill(int r, int w, int a0, int a1, uint16_t col)
+{
+    if (a1 <= a0) return;
+    const int ro  = r + (w >> 1), ri = r - (w >> 1);
+    const int ro2 = ro * ro,      ri2 = ri * ri;
+    ui->startWrite();
+    for (int dy = -ro; dy <= ro; ++dy) {
+        const int y = g_cy + dy;
+        if (y < 0 || y >= g_h) continue;
+        const int  xo   = (int)sqrtf((float)(ro2 - dy * dy));
+        const bool hole = (dy > -ri && dy < ri);
+        const int  xi   = hole ? (int)sqrtf((float)(ri2 - dy * dy)) : 0;
+        const int  segs = hole ? 2 : 1;
+        for (int s = 0; s < segs; ++s) {
+            const int xa = (s == 0) ? g_cx - xo : g_cx + xi;
+            const int xb = (s == 0 && hole) ? g_cx - xi : g_cx + xo;
+            for (int x = xa; x <= xb; ++x) {
+                const int h = cwHueOf(x - g_cx, dy);
+                if (h >= a0 && h < a1) ui->writePixel(x, y, col);
+            }
+        }
+    }
+    ui->endWrite();
 }
 
 static void drawColorWheel()
 {
     char v[16];
 
-    // 色相环：每 1° 一段四边形，两片三角形拼成
-    const float ro = (float)CW_R, ri = (float)CW_RIN;
-    for (int d = 0; d < 360; ++d) {
-        const float a0 = (float)d * DEG_TO_RAD;
-        const float a1 = (float)(d + 1) * DEG_TO_RAD;
-        const int x0o = g_cx + (int)lroundf(sinf(a0) * ro);
-        const int y0o = g_cy - (int)lroundf(cosf(a0) * ro);
-        const int x1o = g_cx + (int)lroundf(sinf(a1) * ro);
-        const int y1o = g_cy - (int)lroundf(cosf(a1) * ro);
-        const int x0i = g_cx + (int)lroundf(sinf(a0) * ri);
-        const int y0i = g_cy - (int)lroundf(cosf(a0) * ri);
-        const int x1i = g_cx + (int)lroundf(sinf(a1) * ri);
-        const int y1i = g_cy - (int)lroundf(cosf(a1) * ri);
-        const uint16_t c = hsv565((uint16_t)d, 1.00f, 1.00f);
-        ui->fillTriangle(x0o, y0o, x1o, y1o, x1i, y1i, c);
-        ui->fillTriangle(x0i, y0i, x1o, y1o, x1i, y1i, c);
+    // 色相表：360 档，整环只查表
+    static uint16_t lut[360];
+    static bool     lutReady = false;
+    if (!lutReady) {
+        for (int i = 0; i < 360; ++i) lut[i] = hsv565((uint16_t)i, 1.00f, 1.00f);
+        lutReady = true;
     }
 
+    // 色相环：按行取环带区间，左右两段逐像素写入。
+    // 不用扇形三角形拼贴，避免细窄三角形栅格化时漏像素。
+    const int ro2 = CW_R * CW_R, ri2 = CW_RIN * CW_RIN;
+    ui->startWrite();
+    for (int dy = -CW_R; dy <= CW_R; ++dy) {
+        const int y = g_cy + dy;
+        if (y < 0 || y >= g_h) continue;
+        const int xo = (int)sqrtf((float)(ro2 - dy * dy));
+        if (dy > -CW_RIN && dy < CW_RIN) {
+            const int xi = (int)sqrtf((float)(ri2 - dy * dy));
+            cwRow(y, g_cx - xo, g_cx - xi, dy, lut);
+            cwRow(y, g_cx + xi, g_cx + xo, dy, lut);
+        } else {
+            cwRow(y, g_cx - xo, g_cx + xo, dy, lut);
+        }
+    }
+    ui->endWrite();
+
     // 指示点
+    const float ro  = (float)CW_R, ri = (float)CW_RIN;
     const float hw  = colHueWrapped();
     const float ah  = hw * DEG_TO_RAD;
     const float rm  = (ro + ri) * 0.5f;
     const int   hx  = g_cx + (int)lroundf(sinf(ah) * rm);
     const int   hy  = g_cy - (int)lroundf(cosf(ah) * rm);
+    const float vv  = (float)g_colVal / 100.0f;
     fillCircleAA((float)hx, (float)hy, 15.0f, C_BG);
     fillCircleAA((float)hx, (float)hy, 13.0f, C_TEXT);
-    fillCircleAA((float)hx, (float)hy, 8.0f, hsv565((uint16_t)lroundf(hw), 1.00f, 1.00f));
+    fillCircleAA((float)hx, (float)hy, 8.0f, hsv565((uint16_t)lroundf(hw), 1.00f, vv));
 
-    // 中心预览
+    // 中心预览：颜色随亮度变化，圆内显示亮度
     const uint16_t csel = (g_colTarget == 0) ? themeColor() : runColor();
     fillCircleAA((float)g_cx, (float)g_cy, 52.0f, csel);
-    fillCircleAA((float)g_cx, (float)g_cy, 4.0f,  C_BG);
+
+    // 亮度弧：满圈对应 30..100
+    ringArcFill(64, 5, 0, 360, C_BTN);
+    ringArcFill(64, 5, 0, (g_colVal - 30) * 360 / 70, C_TEXT);
+
+    snprintf(v, sizeof(v), "%d%%", g_colVal);
+    textC(g_cx, g_cy, v, F_S, (g_colVal >= 62) ? C_BG : C_TEXT);
 
     textC(g_cx, g_cy - 84, (g_colTarget == 0) ? "主题色" : "强调色", F_S, C_DIM);
-    snprintf(v, sizeof(v), "%d°", (int)lroundf(hw));
+    snprintf(v, sizeof(v), "色相 %d° · 亮度 %d%%", (int)lroundf(hw), g_colVal);
     textC(g_cx, g_cy + 84, v, F_S, C_DIM);
 
-    textC(g_cx, 414, "拖动选色 · 点按确认", F_S, C_DIM);
+    textC(g_cx, 414, "环上选色相 · 圆内调亮度", F_S, C_DIM);
 }
 
 // ------------------------------------------------------------
@@ -1366,6 +1521,7 @@ static void enterColorPage()
     cfgFlush();
     g_colTarget = 0;
     g_colHue    = (float)g_cfg.themeHue;
+    g_colVal    = (int)g_cfg.themeVal;
     g_page      = PG_COLOR;
 }
 
@@ -1375,6 +1531,7 @@ static void colorNext()
     if (g_colTarget == 0) {
         g_colTarget = 1;
         g_colHue    = (float)g_cfg.runHue;
+        g_colVal    = (int)g_cfg.runVal;
         uiTick();
         return;
     }
@@ -1388,6 +1545,7 @@ static void colorPrev()
     if (g_colTarget == 1) {
         g_colTarget = 0;
         g_colHue    = (float)g_cfg.themeHue;
+        g_colVal    = (int)g_cfg.themeVal;
         uiTick();
         return;
     }
@@ -1607,11 +1765,17 @@ static bool uiTouch(uint32_t now)
             }
         }
 
-        // 色轮：环上按下即选色，之后跟随拖动
+        // 色轮：环上按下即选色相；中心圆内上下拖动调亮度
         if (g_page == PG_COLOR) {
             const float dx = (float)t.x - (float)g_cx;
             const float dy = (float)t.y - (float)g_cy;
             const float d2 = dx * dx + dy * dy;
+            if (d2 <= 76.0f * 76.0f) {
+                g_valDrag = true;
+                g_valY0   = t.y;
+                g_valV0   = g_colVal;
+                return true;
+            }
             const float r0 = (float)(CW_RIN - 8);
             const float r1 = (float)(CW_R + 24);
             if (d2 >= r0 * r0 && d2 <= r1 * r1) {
@@ -1673,6 +1837,20 @@ static bool uiTouch(uint32_t now)
             return true;
         }
         if (g_dialActive) return dialMove(t.x, t.y);
+
+        if (g_valDrag) {
+            // 横向为主的位移留给左右切色，不改亮度
+            const int adx = t.x > g_tsX ? t.x - g_tsX : g_tsX - t.x;
+            const int ady = t.y > g_tsY ? t.y - g_tsY : g_tsY - t.y;
+            if (adx > ady + 10) return false;
+            int v = g_valV0 + (g_valY0 - t.y) / 2;      // 向上变亮，2 px 一档
+            if (v < 30)  v = 30;
+            if (v > 100) v = 100;
+            if (v == g_colVal) return false;
+            g_colVal = v;
+            colorApply();
+            return true;
+        }
 
         if (g_colorDrag) {
             const float a = dialAngle(t.x, t.y);
@@ -1742,6 +1920,17 @@ static bool uiTouch(uint32_t now)
             return false;
         }
 
+        if (g_valDrag) {
+            g_valDrag = false;
+            if (hswipe) {                                // 横向：切换主题色 / 强调色
+                if (dx < 0) colorNext(); else colorPrev();
+                return true;
+            }
+            if (adx < 22 && ady < 22 && ms < 1200) return uiTap(t.x, t.y);  // 中心轻点＝确认
+            uiSettle();
+            return true;
+        }
+
         if (g_colorDrag) {
             g_colorDrag = false;
             if (hswipe) {                                // 横向：切换主题色 / 强调色
@@ -1781,6 +1970,7 @@ static void uiTouchAbort()
     g_listDrag    = false;
     g_dialActive  = false;
     g_colorDrag   = false;
+    g_valDrag     = false;
     g_pressRow    = -1;
     g_pressBtn    = 0;
     g_dirLock     = 0;

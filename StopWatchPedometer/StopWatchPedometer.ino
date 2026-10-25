@@ -183,11 +183,19 @@ static void mergeRtcState()
         g_steps     = 0;
         g_runSteps  = 0;
         g_activeSec = 0;
+        bucketClear();
+        memcpy(g_rtc.bktStep, g_bkt.step, sizeof(g_bkt.step));
+        memcpy(g_rtc.bktRun,  g_bkt.run,  sizeof(g_bkt.run));
         g_nextMilestone = 1000;
     } else {
         if (g_rtc.steps     > g_steps)     g_steps     = g_rtc.steps;
         if (g_rtc.run       > g_runSteps)  g_runSteps  = g_rtc.run;
         if (g_rtc.activeSec > g_activeSec) g_activeSec = g_rtc.activeSec;
+        // 睡眠期间的分时明细只存在 RTC 里，逐格取较大值合并
+        for (int i = 0; i < BKT_N; ++i) {
+            if (g_rtc.bktStep[i] > g_bkt.step[i]) g_bkt.step[i] = g_rtc.bktStep[i];
+            if (g_rtc.bktRun[i]  > g_bkt.run[i])  g_bkt.run[i]  = g_rtc.bktRun[i];
+        }
     }
     if (g_rtc.vbat) g_vbat = g_rtc.vbat;
 
@@ -654,7 +662,10 @@ static void syncHardwareSteps()
     if (d) {
         // 本秒的步态由硬件给出，按状态把这段增量归入跑步或步行。
         // 状态取自读取瞬间，与实际步态最多差一个采样周期。
-        if (g_actCode == pedimu::ACT_RUN) g_runSteps += d;
+        if (g_actCode == pedimu::ACT_RUN) {
+            g_runSteps += d;
+            bktAdd(g_bkt.run, d);
+        }
 
         // [stp] 诊断：raw=硬件计数器现值 d=本次增量。正常走路 raw 每次 +1；
         // 若 raw 每次 +2 → BMI270 在硬件层双计（参数/配置问题）；
@@ -882,6 +893,7 @@ void setup()
 
     // RTC 已就绪，这时恢复今日成绩并做跨天判断才准确
     loadToday();
+    bucketTick();
     Serial.printf("[ped] loadToday steps=%u day=%d today=%d\n",
                   (unsigned)g_steps, (int)g_dayKey, (int)todayKey());
 
@@ -1090,6 +1102,7 @@ void loop()
     static uint32_t lastPoll = 0;
     if (now - lastPoll >= 1000) {
         lastPoll = now;
+        bucketTick();                       // 先刷新时段，本秒的步数才记对格
         const uint32_t before = g_steps;
         syncHardwareSteps();
         cadencePush(g_steps - before);
