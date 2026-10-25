@@ -1,9 +1,0 @@
-{
-  "additionalFiles": "",
-  "compiler.optimization_flags": "-Os",
-  "customBuildProperties": "",
-  "fqbn": "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB,FlashMode=qio,CPUFreq=240,CDCOnBoot=cdc,USBMode=hwcdc,UploadMode=cdc,DebugLevel=none",
-  "hardwareFolders": "C:\\Users\\giant\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.7,C:\\Users\\giant\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.7",
-  "otherLibrariesFolders": "C:\\Users\\giant\\WorkBuddy\\2026-10-23-19-11-47\\pedometer\\tools\\libs,C:\\Users\\giant\\Documents\\Arduino\\libraries",
-  "sketchLocation": "C:\\Users\\giant\\WorkBuddy\\2026-10-23-19-11-47\\pedometer\\StopWatchDiag"
-}

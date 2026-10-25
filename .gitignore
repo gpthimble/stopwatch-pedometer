@@ -1,19 +1,31 @@
 # 构建产物
-out_dbg/
 out*/
 *.bin
 *.elf
 *.hex
-!tools/**/*.bin
+*.map
+!dist/*.bin
+
+# 依赖库与参考源码：按 README 自行下载放置
+tools/libs/
+tools/ref_demo/
+tools/ref_power/
+tools/bmi270api/
+tools/arduino-cli.exe
+tools/arduino-cli.zip
 
 # Python
 __pycache__/
 *.pyc
 
-# 串口日志
+# 串口日志与抓帧数据
 *.log
+*.raw
+
+# 构建缓存
+**/build/
+.build/
 
 # IDE
 .vscode/
 .idea/
-StopWatchPedometer/build/

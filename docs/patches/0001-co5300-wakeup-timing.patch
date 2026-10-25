@@ -1,0 +1,54 @@
+From eb5307ab4fbbf60d2bdbaa8500c1cf84da0a37c9 Mon Sep 17 00:00:00 2001
+From: Thimble Liu <G.P.Thimble@gmail.com>
+Date: Sun, 25 Oct 2026 00:04:56 +0800
+Subject: [PATCH] fix(panel): 120ms after reset release; SLPOUT first in CO5300
+ init table
+
+---
+ src/M5GFX.cpp                      | 6 +++++-
+ src/lgfx/v1/panel/Panel_CO5300.hpp | 5 ++++-
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/src/M5GFX.cpp b/src/M5GFX.cpp
+index 04736f7..0e10549 100644
+--- a/src/M5GFX.cpp
++++ b/src/M5GFX.cpp
+@@ -2067,7 +2067,11 @@ namespace m5gfx
+               lgfx::i2c::bitOff(i2c_port, m5ioe1_i2c_addr, 0x05, 0b00011000, m5ioe1_i2c_freq);  // Set LOW gpio4,5
+               lgfx::delay(8);
+               lgfx::i2c::bitOn( i2c_port, m5ioe1_i2c_addr, 0x05, 0b00011000, m5ioe1_i2c_freq);  // Set HIGH gpio4,5,8
+-              lgfx::delay(2);
++              // CO5300 要求复位释放后等内部 boot 完成（~120ms）才能可靠收命令。
++              // 原值 2ms：USB 供电时残余电荷勉强够用，电池供电唤醒时电源轨仍在爬升，
++              // 前面的初始化命令会整体丢失 → 黑屏/弧光（官方 demo 不做硬件复位、
++              // 在 display_init 前有 50ms 稳定期，不存在该竞争窗口）。
++              lgfx::delay(120);
+ 
+               // Audio PA: off
+               static constexpr uint8_t IOE1_PIN_10 = 9;
+diff --git a/src/lgfx/v1/panel/Panel_CO5300.hpp b/src/lgfx/v1/panel/Panel_CO5300.hpp
+index 7915f7b..44ffac3 100644
+--- a/src/lgfx/v1/panel/Panel_CO5300.hpp
++++ b/src/lgfx/v1/panel/Panel_CO5300.hpp
+@@ -50,6 +50,10 @@ namespace lgfx
+             const uint8_t* getInitCommands(uint8_t listno) const override
+             {
+               static constexpr uint8_t list0[] = {
++                // SLPOUT 放在最前（与官方 demo 一致），保证面板从硬件复位出来、
++                // 电源稳定后第一时间退 sleep；其余配置命令全部在 sleep-out 后发。
++                0x11, 0x80, 150, // Sleep out —— SLPOUT 后等 150ms 再发后续命令；
++                                 // 0ms 时 0x29 紧贴 0x11，电池供电唤醒偶发把 DISPON 打丢（黑屏/弧光）
+                 0xFE, 1, 0x00, // {0xFE, {0x00}, 0x01}, //SET PAGE 00H
+                 0xC4, 1, 0x80,
+                 0x3A, 1, 0x55, // Interface Pixel Format: 16bit/pixel
+@@ -58,7 +62,6 @@ namespace lgfx
+                 0x63, 1, 0xFF,
+                 0x2A, 4, 0x00, 0x16, 0x01, 0xAF, // SET COLUMN START ADRESS SC = 0x0016 = 22 and EC = 0x01AF = 431 (410 columns but an 22 offset)
+                 0x2B, 4, 0x00, 0x00, 0x01, 0xF5, // SET ROW START ADRESS SP = 0 and EP = 0x1F5 = 501 (502 lines)
+-                0x11, 0x80, 0, // Sleep out
+                 0x51, 1, 0x01, // display brightness dark
+                 0x29, 0x80, 0, // display on
+                 0x51, 1, 0x80, // display brightness (max = 0xff)
+-- 
+2.55.0.windows.3
+

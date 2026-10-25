@@ -1003,22 +1003,36 @@ static void drawDebugHw()
     snprintf(v, sizeof(v), "%u", (unsigned)pedimu::lastCount);
     textC(g_cx, 124, v, F_NUM, C_TEXT);
 
-    static const char *actName[] = {"静止", "站立", "行走", "跑步"};
-    snprintf(v, sizeof(v), "活动 %s · 本次硬件 %u 步",
-             actName[g_actCode & 3], (unsigned)g_hwSteps);
+    // legacy 配置未使能 activity 识别，act 字段无意义，不显示活动类型
+    if (pedimu::mode == pedimu::MODE_PHONE) {
+        snprintf(v, sizeof(v), "LEGACY 配置 · 本次硬件 %u 步", (unsigned)g_hwSteps);
+    } else {
+        static const char *actName[] = {"静止", "站立", "行走", "跑步"};
+        snprintf(v, sizeof(v), "活动 %s · 本次硬件 %u 步",
+                 actName[g_actCode & 3], (unsigned)g_hwSteps);
+    }
     textC(g_cx, 186, v, F_S, C_DIM);
 
+    // 使能字节随配置包变：legacy(手机) 在 page4 字节 1，base(腕戴) 在 page6 字节 3
+    const bool phone = (pedimu::mode == pedimu::MODE_PHONE);
+    const uint8_t enByte = phone ? pedimu::PHONE_EN_BYTE : pedimu::STEP_EN_BYTE;
+
     snprintf(v, sizeof(v), "IMU %02X  INIT %02X  EN %02X  V%X",
-             pedimu::dbgChip, pedimu::dbgStat, pedimu::dbgPage6[3], pedimu::dbgVerify);
+             pedimu::dbgChip, pedimu::dbgStat, pedimu::dbgPage6[enByte], pedimu::dbgVerify);
     textC(g_cx, 224, v, F_SM,
           (pedimu::dbgVerify & 1) ? C_DIM : C_WARN);
 
-    snprintf(v, sizeof(v), "参数 %04X",
-             pedimu::dbgParam);
-    textC(g_cx, 254, v, F_SM,
-          (pedimu::dbgVerify & 2) ? C_DIM : C_WARN);
+    if (phone) {
+        snprintf(v, sizeof(v), "配置 LEGACY（手机）");
+        textC(g_cx, 254, v, F_SM, C_DIM);
+    } else {
+        snprintf(v, sizeof(v), "参数 %04X", pedimu::dbgParam);
+        textC(g_cx, 254, v, F_SM,
+              (pedimu::dbgVerify & 2) ? C_DIM : C_WARN);
+    }
 
-    snprintf(v, sizeof(v), "p6 %02X %02X %02X %02X %02X %02X %02X %02X",
+    snprintf(v, sizeof(v), "%s %02X %02X %02X %02X %02X %02X %02X %02X",
+             phone ? "p4" : "p6",
              pedimu::dbgPage6[0], pedimu::dbgPage6[1], pedimu::dbgPage6[2],
              pedimu::dbgPage6[3], pedimu::dbgPage6[4], pedimu::dbgPage6[5],
              pedimu::dbgPage6[6], pedimu::dbgPage6[7]);
