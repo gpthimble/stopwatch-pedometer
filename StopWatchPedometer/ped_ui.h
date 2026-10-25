@@ -22,7 +22,15 @@ int g_bandY0 = 0;
 int g_bandY1 = 0;                 // 由 uiInit 在知道 g_h 之后设为 g_h
 
 // ---------------- 调色 ----------------
-static uint16_t C_BG, C_TRACK, C_TEXT, C_DIM, C_ACCENT, C_WARN, C_GOLD, C_BTN;
+// C_ACCENT 由设置里的主题色派生，C_RUN 由强调色派生（跑步段专用）
+static uint16_t C_BG, C_TRACK, C_TEXT, C_DIM, C_ACCENT, C_WARN, C_GOLD, C_BTN, C_RUN;
+
+// 主题色与强调色改变后重算，其余中性色（文字、轨道、警告）不随主题变化
+static void applyTheme()
+{
+    C_ACCENT = themeColor();
+    C_RUN    = runColor();
+}
 
 // 字模见 ped_font.h（genfont.py 从微软雅黑/雅黑粗体生成）
 
@@ -93,8 +101,8 @@ static const char *weekdayName(int y, int m, int d)
     return n[w];
 }
 
-// 页面（PG_TIME 不参与左右翻页，只能从设置里的「对时」进入）
-enum { PG_MAIN = 0, PG_STATS, PG_HIST, PG_SET, PG_TIME, PG_DEBUG };
+// 页面（PG_TIME / PG_COLOR 不参与左右翻页，只能从设置进入；PG_DEBUG 仅串口可达）
+enum { PG_MAIN = 0, PG_STATS, PG_HIST, PG_SET, PG_TIME, PG_DEBUG, PG_COLOR };
 #define PG_CYCLE_MAX PG_SET
 
 // ------------------------------------------------------------
@@ -202,8 +210,9 @@ static void textR(int x, int y, const char *s, const PedFont &f, uint16_t col)
 
 // 圆环：rOut/rIn 半径，a0 起始角（度，-90 = 12 点），span 扫过角度
 // 扇区部分用 cFill，其余用 cTrack，一次逐像素混合完成
+// drawTrack=false 时只叠加扇区，不重画轨道 —— 用于在同一圈上叠第二段颜色
 static void drawRingAA(float rOut, float rIn, float a0, float span,
-                       uint16_t cTrack, uint16_t cFill)
+                       uint16_t cTrack, uint16_t cFill, bool drawTrack = true)
 {
     if (rIn < 0.0f)  rIn  = 0.0f;
     if (rIn >= rOut) return;
@@ -272,8 +281,14 @@ static void drawRingAA(float rOut, float rIn, float a0, float span,
                     // 无进度时整圈都是轨道色：下面用 aT = cov
                 }
 
-                const uint32_t aF = (uint32_t)(cov * ang * 255.0f + 0.5f);
-                const uint32_t aT = (uint32_t)(cov * 255.0f + 0.5f) - aF;
+                uint32_t aF = (uint32_t)(cov * ang * 255.0f + 0.5f);
+                uint32_t aT = (uint32_t)(cov * 255.0f + 0.5f) - aF;
+                // 叠加模式：不画轨道，扇区边缘的残余覆盖率并入扇区色
+                if (!drawTrack) {
+                    if (!aF) continue;
+                    aF += aT;
+                    aT = 0;
+                }
                 if (!aT && !aF) continue;
 
                 const uint32_t R = (tr * aT + fr * aF) / 255u;
@@ -374,7 +389,17 @@ static void drawMain()
 
     uint16_t cFill = C_ACCENT;
     if (p > 0.85f) cFill = lerp565(C_ACCENT, C_GOLD, (p - 0.85f) / 0.15f);
-    drawRingAA(rOut, rIn, -90.0f, 360.0f * p, C_TRACK, cFill);
+    const float span = 360.0f * p;
+    drawRingAA(rOut, rIn, -90.0f, span, C_TRACK, cFill);
+
+    // 进度弧的末端按跑步步数占比叠一段强调色
+    float runFrac = (g_steps > 0) ? (float)g_runSteps / (float)g_steps : 0.0f;
+    if (runFrac > 1.0f) runFrac = 1.0f;
+    const float runSpan = span * runFrac;
+    if (runSpan > 0.8f) {
+        drawRingAA(rOut, rIn, -90.0f + span - runSpan, runSpan,
+                   C_TRACK, C_RUN, false);
+    }
 
     const bool hasRtc = M5.Rtc.isEnabled() && rtcValid();
 
@@ -526,8 +551,15 @@ static void drawHist()
         if (isToday && r.steps < g_cfg.goal) c = lerp565(C_ACCENT, C_DIM, 0.25f);
         ui->fillRect(bx, yb - hgt, bw, hgt, c);
 
+        // 柱顶一段按跑步占比着色，与主页色环同一强调色
+        if (r.run > 0) {
+            int hr = (int)((float)hgt * (float)r.run / (float)r.steps + 0.5f);
+            if (hr > hgt) hr = hgt;
+            if (hr >= 3) ui->fillRect(bx, yb - hgt, bw, hr, C_RUN);
+        }
+
         snprintf(v, sizeof(v), "%u", (unsigned)r.steps);
-        textC(bx + bw / 2, yb - hgt - 16, v, F_S, C_DIM);
+        textC(bx + bw / 2, yb - hgt - 12, v, F_TINY, C_DIM);
 
         snprintf(v, sizeof(v), "%d", (int)(r.day % 100));
         textC(bx + bw / 2, yb + 22, v, F_S, isToday ? C_TEXT : C_DIM);
@@ -553,7 +585,8 @@ static bool  g_wMoved   = false;
 static float g_listPx   = 0.0f;   // 设置列表滚动位置（像素）
 
 #define SET_ROW_TIME  7
-#define SET_ROW_CLEAR 8
+#define SET_ROW_COLOR 8
+#define SET_ROW_CLEAR 9
 
 #define LIST_VP0  94              // 设置列表可视区（圆屏，纵向要收紧）
 #define LIST_VP1  372
@@ -585,13 +618,13 @@ static void timeLoad()
     g_tH  = dt.time.hours; g_tMi = dt.time.minutes;
 }
 
-static int rowCount() { return 9; }
+static int rowCount() { return 10; }
 
 static const char *rowName(int i)
 {
     static const char *setName[] = {"每日目标", "身高", "体重", "亮度",
-                                    "提示", "息屏", "深睡", "对时", "清零今日"};
-    return setName[i % 9];
+                                    "提示", "息屏", "深睡", "对时", "配色", "清零今日"};
+    return setName[i % 10];
 }
 
 static void rowValue(int i, char *b, size_t n)
@@ -803,16 +836,27 @@ static void drawRowLink(int y)
     chevronAt(394, y, 1, C_DIM);
 }
 
+// 「配色」行：右侧是主题色与强调色两个色点
+static void drawRowColor(int y)
+{
+    textL(40, y, rowName(SET_ROW_COLOR), F_L, C_TEXT);
+    fillCircleAA(332, y, 15, themeColor());
+    fillCircleAA(372, y, 15, runColor());
+    chevronAt(414, y, 1, C_DIM);
+}
+
 // 清零今日：要连按两次，中间 5 s 有效，避免误触
 static uint32_t g_clearArmMs = 0;
 
 static void clearToday()
 {
     g_steps     = 0;
+    g_runSteps  = 0;
     g_activeSec = 0;
     g_hwSteps   = 0;
     g_nextMilestone = 1000;
     g_rtc.steps     = 0;
+    g_rtc.run       = 0;
     g_rtc.activeSec = 0;
     g_rtc.hwInit    = 0;        // 下次读计数时重建基线，否则会立刻把旧步数加回来
     g_rtc.hwBase    = 0;
@@ -848,6 +892,7 @@ static void drawSet()
         const int y = ROW_Y0 + (int)lroundf((float)(i * ROW_H) - g_listPx);
         if (i > 0) ui->drawFastHLine(40, y - ROW_H / 2, g_w - 80, C_TRACK);
         if (i == SET_ROW_TIME) drawRowLink(y);
+        else if (i == SET_ROW_COLOR) drawRowColor(y);
         else if (i == SET_ROW_CLEAR) drawRowClear(y);
         else                   drawRow(i, y);
     }
@@ -993,6 +1038,77 @@ static void drawTime()
 }
 
 // ------------------------------------------------------------
+// 配色（色轮）
+// ------------------------------------------------------------
+#define CW_R    160             // 色环外径
+#define CW_W    24              // 环宽
+#define CW_RIN  (CW_R - CW_W)
+
+static int   g_colTarget = 0;      // 0 主题色 / 1 强调色
+static float g_colHue    = 0.0f;   // 当前色相，保留连续值以便跟手
+static float g_colPrev   = 0.0f;   // 上一帧角度，用于求增量
+
+static float colHueWrapped()
+{
+    float h = fmodf(g_colHue, 360.0f);
+    if (h < 0.0f) h += 360.0f;
+    return h;
+}
+
+static void colorApply()
+{
+    const uint16_t h = (uint16_t)lroundf(colHueWrapped()) % 360;
+    if (g_colTarget == 0) g_cfg.themeHue = h;
+    else                  g_cfg.runHue   = h;
+    applyTheme();
+    cfgTouch();
+}
+
+static void drawColorWheel()
+{
+    char v[16];
+
+    // 色相环：每 1° 一段四边形，两片三角形拼成
+    const float ro = (float)CW_R, ri = (float)CW_RIN;
+    for (int d = 0; d < 360; ++d) {
+        const float a0 = (float)d * DEG_TO_RAD;
+        const float a1 = (float)(d + 1) * DEG_TO_RAD;
+        const int x0o = g_cx + (int)lroundf(sinf(a0) * ro);
+        const int y0o = g_cy - (int)lroundf(cosf(a0) * ro);
+        const int x1o = g_cx + (int)lroundf(sinf(a1) * ro);
+        const int y1o = g_cy - (int)lroundf(cosf(a1) * ro);
+        const int x0i = g_cx + (int)lroundf(sinf(a0) * ri);
+        const int y0i = g_cy - (int)lroundf(cosf(a0) * ri);
+        const int x1i = g_cx + (int)lroundf(sinf(a1) * ri);
+        const int y1i = g_cy - (int)lroundf(cosf(a1) * ri);
+        const uint16_t c = hsv565((uint16_t)d, 1.00f, 1.00f);
+        ui->fillTriangle(x0o, y0o, x1o, y1o, x1i, y1i, c);
+        ui->fillTriangle(x0i, y0i, x1o, y1o, x1i, y1i, c);
+    }
+
+    // 指示点
+    const float hw  = colHueWrapped();
+    const float ah  = hw * DEG_TO_RAD;
+    const float rm  = (ro + ri) * 0.5f;
+    const int   hx  = g_cx + (int)lroundf(sinf(ah) * rm);
+    const int   hy  = g_cy - (int)lroundf(cosf(ah) * rm);
+    fillCircleAA((float)hx, (float)hy, 15.0f, C_BG);
+    fillCircleAA((float)hx, (float)hy, 13.0f, C_TEXT);
+    fillCircleAA((float)hx, (float)hy, 8.0f, hsv565((uint16_t)lroundf(hw), 1.00f, 1.00f));
+
+    // 中心预览
+    const uint16_t csel = (g_colTarget == 0) ? themeColor() : runColor();
+    fillCircleAA((float)g_cx, (float)g_cy, 52.0f, csel);
+    fillCircleAA((float)g_cx, (float)g_cy, 4.0f,  C_BG);
+
+    textC(g_cx, g_cy - 84, (g_colTarget == 0) ? "主题色" : "强调色", F_S, C_DIM);
+    snprintf(v, sizeof(v), "%d°", (int)lroundf(hw));
+    textC(g_cx, g_cy + 84, v, F_S, C_DIM);
+
+    textC(g_cx, 414, "拖动选色 · 点按确认", F_S, C_DIM);
+}
+
+// ------------------------------------------------------------
 // 调试
 // ------------------------------------------------------------
 static void drawDebugHw()
@@ -1003,14 +1119,10 @@ static void drawDebugHw()
     snprintf(v, sizeof(v), "%u", (unsigned)pedimu::lastCount);
     textC(g_cx, 124, v, F_NUM, C_TEXT);
 
-    // legacy 配置未使能 activity 识别，act 字段无意义，不显示活动类型
-    if (pedimu::mode == pedimu::MODE_PHONE) {
-        snprintf(v, sizeof(v), "LEGACY 配置 · 本次硬件 %u 步", (unsigned)g_hwSteps);
-    } else {
-        static const char *actName[] = {"静止", "站立", "行走", "跑步"};
-        snprintf(v, sizeof(v), "活动 %s · 本次硬件 %u 步",
-                 actName[g_actCode & 3], (unsigned)g_hwSteps);
-    }
+    // 步态取自 page0 字节 4（0 静止 / 1 步行 / 2 跑步 / 3 未知）
+    static const char *actName[] = {"静止", "步行", "跑步", "未知"};
+    snprintf(v, sizeof(v), "步态 %s · 本次硬件 %u 步",
+             actName[g_actCode & 3], (unsigned)g_hwSteps);
     textC(g_cx, 186, v, F_S, C_DIM);
 
     // 使能字节随配置包变：legacy(手机) 在 page4 字节 1，base(腕戴) 在 page6 字节 3
@@ -1089,6 +1201,7 @@ static void drawPage()
         case PG_HIST:  drawHist();  break;
         case PG_SET:   drawSet();   break;
         case PG_TIME:  drawTime();  break;
+        case PG_COLOR: drawColorWheel(); break;
         default:       drawDebugHw(); break;
     }
 }
@@ -1214,6 +1327,7 @@ static int      g_pressRow    = -1;      // 按下瞬间锁定的设置行（避
 static int      g_pressBtn    = 0;       // 按下的按钮：-1 减 / +1 加 / 0 不是按钮
 static int      g_listStartX  = 0;
 static int      g_dirLock     = 0;       // 0=未定 1=横向切页 2=纵向滚动
+static bool     g_colorDrag   = false;   // 色轮拖动中
 static int      g_tsX = 0, g_tsY = 0;
 static uint32_t g_tsMs = 0;
 
@@ -1221,7 +1335,7 @@ static void pageNext()
 {
     if (g_page == PG_SET) cfgFlush();                     // 离开设置页即落盘
     uiPage();
-    if (g_page == PG_TIME) { g_page = PG_SET; return; }   // 对时页不参与循环
+    if (g_page == PG_TIME || g_page == PG_COLOR) { g_page = PG_SET; return; }
     g_page = (g_page + 1 > PG_CYCLE_MAX) ? PG_MAIN : g_page + 1;
     g_setScroll = 0; g_listPx = 0.0f;
 }
@@ -1230,7 +1344,7 @@ static void pagePrev()
 {
     if (g_page == PG_SET) cfgFlush();
     uiPage();
-    if (g_page == PG_TIME) { g_page = PG_SET; return; }
+    if (g_page == PG_TIME || g_page == PG_COLOR) { g_page = PG_SET; return; }
     g_page = (g_page == PG_MAIN) ? PG_CYCLE_MAX : g_page - 1;
     g_setScroll = 0; g_listPx = 0.0f;
 }
@@ -1245,6 +1359,40 @@ static void enterTimePage()
     g_wCol     = -1;
     g_wMoved   = false;
     g_page     = PG_TIME;
+}
+
+static void enterColorPage()
+{
+    cfgFlush();
+    g_colTarget = 0;
+    g_colHue    = (float)g_cfg.themeHue;
+    g_page      = PG_COLOR;
+}
+
+// 左滑：主题色 → 强调色 → 返回设置
+static void colorNext()
+{
+    if (g_colTarget == 0) {
+        g_colTarget = 1;
+        g_colHue    = (float)g_cfg.runHue;
+        uiTick();
+        return;
+    }
+    cfgFlush();
+    g_page = PG_SET;
+}
+
+// 右滑：强调色 → 主题色 → 返回设置
+static void colorPrev()
+{
+    if (g_colTarget == 1) {
+        g_colTarget = 0;
+        g_colHue    = (float)g_cfg.themeHue;
+        uiTick();
+        return;
+    }
+    cfgFlush();
+    g_page = PG_SET;
 }
 
 // 表盘拖动：把手指角度累积成一个连续量，转满一圈就自动跨到上午 / 下午
@@ -1355,6 +1503,18 @@ static bool uiTap(int x, int y)
         return true;
     }
 
+    // ---------------- 配色页 ----------------
+    // 中心区点按确认；环上按下已经选过色，不当确认
+    if (g_page == PG_COLOR) {
+        const float dx = (float)x - (float)g_cx;
+        const float dy = (float)y - (float)g_cy;
+        if (dx * dx + dy * dy >= (float)(CW_RIN * CW_RIN)) return false;
+        cfgFlush();
+        g_page = PG_SET;
+        uiConfirm();
+        return true;
+    }
+
     if (g_page != PG_SET) { pageNext(); return true; }
 
     // ---------------- 设置列表 ----------------
@@ -1369,6 +1529,7 @@ static bool uiTap(int x, int y)
         if (i < 0 || i >= rowCount()) return false;
 
         if (i == SET_ROW_TIME) { enterTimePage(); return true; }
+        if (i == SET_ROW_COLOR) { enterColorPage(); return true; }
         if (i == SET_ROW_CLEAR) {                 // 两次点按才算数
             if (g_clearArmMs != 0 && (int32_t)(millis() - g_clearArmMs) < 0) {
                 clearToday();
@@ -1410,7 +1571,8 @@ static bool uiTouch(uint32_t now)
                 if (fabsf((float)t.y - cy) <= (float)ROW_H * 0.5f) {
                     g_pressRow = i;
                     // − / + 热区：整行右段，左右各 66 px，比视觉按钮宽一倍
-                    if (t.x > 296 && t.x < 432) g_pressBtn = (t.x < 366) ? -1 : 1;
+                    // 只有数值行（0..6）有按钮，对时/配色/清零不走这条路
+                    if (i <= 6 && t.x > 296 && t.x < 432) g_pressBtn = (t.x < 366) ? -1 : 1;
                 }
             }
 
@@ -1442,6 +1604,22 @@ static bool uiTouch(uint32_t now)
             if (d2 >= (float)(DIAL_DEAD * DIAL_DEAD) && d2 <= r * r) {
                 g_dialActive = true;
                 return dialPress(t.x, t.y);
+            }
+        }
+
+        // 色轮：环上按下即选色，之后跟随拖动
+        if (g_page == PG_COLOR) {
+            const float dx = (float)t.x - (float)g_cx;
+            const float dy = (float)t.y - (float)g_cy;
+            const float d2 = dx * dx + dy * dy;
+            const float r0 = (float)(CW_RIN - 8);
+            const float r1 = (float)(CW_R + 24);
+            if (d2 >= r0 * r0 && d2 <= r1 * r1) {
+                g_colorDrag = true;
+                g_colHue    = dialAngle(t.x, t.y);
+                g_colPrev   = g_colHue;
+                colorApply();
+                return true;
             }
         }
         return false;
@@ -1495,6 +1673,17 @@ static bool uiTouch(uint32_t now)
             return true;
         }
         if (g_dialActive) return dialMove(t.x, t.y);
+
+        if (g_colorDrag) {
+            const float a = dialAngle(t.x, t.y);
+            float d = a - g_colPrev;
+            if (d > 180.0f)  d -= 360.0f;
+            if (d < -180.0f) d += 360.0f;
+            g_colPrev = a;
+            g_colHue += d;
+            colorApply();
+            return true;
+        }
         return false;
     }
 
@@ -1536,8 +1725,7 @@ static bool uiTouch(uint32_t now)
                               t.x, t.y, g_pressRow, g_pressBtn, dx, dy);
                 g_slideHint = 0.0f;
                 listSnap();
-                if (g_pressBtn != 0 && g_pressRow >= 0 && g_pressRow < rowCount()
-                    && g_pressRow != SET_ROW_TIME && g_pressRow != SET_ROW_CLEAR) {
+                if (g_pressBtn != 0 && g_pressRow >= 0 && g_pressRow <= 6) {
                     rowAdjust(g_pressRow, g_pressBtn);
                     uiTick();
                     return true;
@@ -1554,11 +1742,24 @@ static bool uiTouch(uint32_t now)
             return false;
         }
 
+        if (g_colorDrag) {
+            g_colorDrag = false;
+            if (hswipe) {                                // 横向：切换主题色 / 强调色
+                if (dx < 0) colorNext(); else colorPrev();
+                return true;
+            }
+            if (adx < 26 && ady < 26 && ms < 1200) return uiTap(t.x, t.y);
+            uiSettle();
+            return true;
+        }
+
         if (g_dialActive) { g_dialActive = false; uiSettle(); return true; }
 
         if (hswipe) {                                // 横向滑动：左滑下一层，右滑返回
             if (g_page == PG_TIME) {
                 if (dx < 0) timeNext(); else timeBack();
+            } else if (g_page == PG_COLOR) {
+                if (dx < 0) colorNext(); else colorPrev();
             } else if (dx < 0) {
                 pageNext();
             } else {
@@ -1579,6 +1780,7 @@ static void uiTouchAbort()
     g_touchActive = false;
     g_listDrag    = false;
     g_dialActive  = false;
+    g_colorDrag   = false;
     g_pressRow    = -1;
     g_pressBtn    = 0;
     g_dirLock     = 0;

@@ -220,6 +220,7 @@ inline int silentTick()
 
     const uint32_t delta = hwAccumulate(raw);
     g_rtc.steps += delta;
+    if (delta && (b[4] & 0x03) == 2) g_rtc.run += delta;   // 步态：2 = 跑步
     if (delta) g_rtc.activeSec += SLEEP_TICK_S;
     g_rtc.wakes++;
 
@@ -251,6 +252,7 @@ inline int silentTick()
     if (needSave) {
         g_prefs.begin("pedo2", false);
         g_prefs.putUInt("steps", g_rtc.steps);
+        g_prefs.putUInt("run",   g_rtc.run);
         g_prefs.putUInt("active", g_rtc.activeSec);
         if (g_rtc.dayKey) g_prefs.putInt("day", g_rtc.dayKey);
     }

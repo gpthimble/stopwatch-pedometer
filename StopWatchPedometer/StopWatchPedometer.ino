@@ -127,6 +127,7 @@ static void enterDeepSleep()
 
     g_rtc.magic     = RTC_MAGIC;
     g_rtc.steps     = g_steps;
+    g_rtc.run       = g_runSteps;
     g_rtc.activeSec = g_activeSec;
     g_rtc.dayKey    = g_dayKey;
 
@@ -158,6 +159,7 @@ static void mergeRtcState()
     if (g_rtc.magic != RTC_MAGIC) {
         g_rtc.magic     = RTC_MAGIC;
         g_rtc.steps     = g_steps;
+        g_rtc.run       = g_runSteps;
         g_rtc.activeSec = g_activeSec;
         g_rtc.dayKey    = g_dayKey;
         g_rtc.hwInit    = 0;
@@ -173,15 +175,18 @@ static void mergeRtcState()
     int32_t today = todayKey();
     if (today != 0 && g_rtc.dayKey != 0 && today != g_rtc.dayKey) {
         // 睡眠期间跨天：昨天的成绩入库，今日从 0 开始
-        histArchive(g_rtc.dayKey, g_rtc.steps);
+        histArchive(g_rtc.dayKey, g_rtc.steps, g_rtc.run);
         histSave();
         g_rtc.steps     = 0;
+        g_rtc.run       = 0;
         g_rtc.activeSec = 0;
         g_steps     = 0;
+        g_runSteps  = 0;
         g_activeSec = 0;
         g_nextMilestone = 1000;
     } else {
         if (g_rtc.steps     > g_steps)     g_steps     = g_rtc.steps;
+        if (g_rtc.run       > g_runSteps)  g_runSteps  = g_rtc.run;
         if (g_rtc.activeSec > g_activeSec) g_activeSec = g_rtc.activeSec;
     }
     if (g_rtc.vbat) g_vbat = g_rtc.vbat;
@@ -368,6 +373,7 @@ static void dbgPoll()
             Serial.flush();
             M5.Display.setBrightness(0);
             g_rtc.steps     = g_steps;
+            g_rtc.run       = g_runSteps;
             g_rtc.activeSec = g_activeSec;
             g_rtc.dayKey    = g_dayKey;
             pedsleep::enterKeysOnly();
@@ -376,6 +382,7 @@ static void dbgPoll()
             Serial.println("[N] real L2 in 8s, then full boot");
             Serial.flush();
             g_rtc.steps     = g_steps;
+            g_rtc.run       = g_runSteps;
             g_rtc.activeSec = g_activeSec;
             g_rtc.dayKey    = g_dayKey;
             g_rtc.dbgBoot   = 1;
@@ -398,6 +405,7 @@ static void dbgPoll()
             Serial.flush();
             g_rtc.magic   = RTC_MAGIC;
             g_rtc.steps   = g_steps;
+            g_rtc.run     = g_runSteps;
             g_rtc.activeSec = g_activeSec;
             g_rtc.dayKey  = g_dayKey;
             g_rtc.dbgBoot = 1;
@@ -644,12 +652,17 @@ static void syncHardwareSteps()
 
     const uint32_t d = hwAccumulate(c);
     if (d) {
+        // 本秒的步态由硬件给出，按状态把这段增量归入跑步或步行。
+        // 状态取自读取瞬间，与实际步态最多差一个采样周期。
+        if (g_actCode == pedimu::ACT_RUN) g_runSteps += d;
+
         // [stp] 诊断：raw=硬件计数器现值 d=本次增量。正常走路 raw 每次 +1；
         // 若 raw 每次 +2 → BMI270 在硬件层双计（参数/配置问题）；
         // 若 raw +1 但 g 连跳 +2 → 软件重复累加（不可能，单路径）。
-        Serial.printf("[stp] raw=%lu d=%lu g_steps=%lu act=%lu\n",
+        Serial.printf("[stp] raw=%lu d=%lu g_steps=%lu act=%lu run=%lu\n",
                       (unsigned long)c, (unsigned long)d,
-                      (unsigned long)(g_steps + d), (unsigned long)act);
+                      (unsigned long)(g_steps + d), (unsigned long)act,
+                      (unsigned long)g_runSteps);
         stepsAdd(d);
         g_hwSteps += d;
     }
@@ -820,10 +833,10 @@ void setup()
     C_TRACK  = rgb(26, 28, 32);
     C_TEXT   = rgb(240, 243, 248);
     C_DIM    = rgb(138, 148, 160);
-    C_ACCENT = rgb(0, 226, 168);
     C_WARN   = rgb(255, 96, 76);
     C_GOLD   = rgb(255, 198, 62);
     C_BTN    = rgb(38, 42, 48);
+    applyTheme();          // C_ACCENT / C_RUN 由设置里的色相派生
 
     if (!POWER_LED_ON) {
         M5.Power.M5pm1.setLedEnLevel(false);

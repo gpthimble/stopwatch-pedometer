@@ -43,6 +43,8 @@ struct Settings
     uint8_t  sound       = 2;      // 0 静音 / 1 震动 / 2 震动+提示音
     uint8_t  screenOffS  = 15;     // 无操作息屏秒数
     uint8_t  sleepAfterS = 45;     // 息屏后进入深睡的秒数
+    uint16_t themeHue    = 165;    // 主题色色相 0..359（环、数值、选中态）
+    uint16_t runHue      = 12;     // 强调色色相 0..359（跑步段）
 };
 
 // 每日历史
@@ -50,6 +52,7 @@ struct DayRec
 {
     int32_t  day;    // YYYYMMDD，0 = 空
     uint32_t steps;
+    uint32_t run;    // 其中判定为跑步的步数
 };
 
 // 深睡期间保存在 RTC 内存中的数据（关机断电后失效）
@@ -57,6 +60,7 @@ struct SleepState
 {
     uint32_t magic;
     uint32_t steps;
+    uint32_t run;        // 当日跑步步数
     uint32_t activeSec;
     int32_t  dayKey;
     uint32_t hwBase;
@@ -79,6 +83,7 @@ Settings g_cfg;
 DayRec   g_hist[HIST_DAYS];
 
 uint32_t g_steps      = 0;   // 今日步数
+uint32_t g_runSteps   = 0;   // 今日其中判定为跑步的步数
 uint32_t g_activeSec  = 0;   // 今日活跃秒数
 int32_t  g_dayKey     = 0;   // 今日日期键
 uint32_t g_savedSteps = 0xFFFFFFFFu;
@@ -165,6 +170,29 @@ static uint16_t lerp565(uint16_t c1, uint16_t c2, float t)
                        (b1 + (int)((b2 - b1) * t)));
 }
 
+// HSV → RGB565。配色只调色相，饱和度与亮度固定，保证界面元素始终可读。
+static inline uint16_t hsv565(uint16_t h, float s, float v)
+{
+    while (h >= 360) h -= 360;
+    const float c = v * s;
+    const float x = c * (1.0f - fabsf(fmodf((float)h / 60.0f, 2.0f) - 1.0f));
+    const float m = v - c;
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+    if      (h <  60) { r = c; g = x; }
+    else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; b = x; }
+    else if (h < 240) { g = x; b = c; }
+    else if (h < 300) { r = x; b = c; }
+    else              { r = c; b = x; }
+    const uint16_t R = (uint16_t)((r + m) * 255.0f + 0.5f);
+    const uint16_t G = (uint16_t)((g + m) * 255.0f + 0.5f);
+    const uint16_t B = (uint16_t)((b + m) * 255.0f + 0.5f);
+    return (uint16_t)(((R & 0xF8) << 8) | ((G & 0xFC) << 3) | (B >> 3));
+}
+
+static inline uint16_t themeColor() { return hsv565(g_cfg.themeHue, 0.90f, 0.92f); }
+static inline uint16_t runColor()   { return hsv565(g_cfg.runHue,   0.86f, 1.00f); }
+
 // 步幅由身高推算：行走步幅 ≈ 身高 × 0.415
 static inline float strideMeters()
 {
@@ -232,6 +260,8 @@ static void cfgLoad()
     g_cfg.sound       = g_prefs.getUChar ("sound",   g_cfg.sound);
     g_cfg.screenOffS  = g_prefs.getUChar ("offs",    g_cfg.screenOffS);
     g_cfg.sleepAfterS = g_prefs.getUChar ("slps",    g_cfg.sleepAfterS);
+    g_cfg.themeHue    = g_prefs.getUShort("hue1",    g_cfg.themeHue);
+    g_cfg.runHue      = g_prefs.getUShort("hue2",    g_cfg.runHue);
 
     // 容错
     if (g_cfg.goal < 500 || g_cfg.goal > 60000) g_cfg.goal = 8000;
@@ -241,9 +271,12 @@ static void cfgLoad()
     if (g_cfg.sound > 2) g_cfg.sound = 2;
     if (g_cfg.screenOffS < 3) g_cfg.screenOffS = 15;
     if (g_cfg.sleepAfterS < 10) g_cfg.sleepAfterS = 45;
+    if (g_cfg.themeHue >= 360) g_cfg.themeHue = 165;
+    if (g_cfg.runHue >= 360) g_cfg.runHue = 12;
 
-    if (g_prefs.getBytesLength("hist") == sizeof(g_hist)) {
-        g_prefs.getBytes("hist", g_hist, sizeof(g_hist));
+    // 历史记录的字段在 v2.5 增加了跑步步数，旧键的长度对不上，读新键
+    if (g_prefs.getBytesLength("hist2") == sizeof(g_hist)) {
+        g_prefs.getBytes("hist2", g_hist, sizeof(g_hist));
     }
 }
 
@@ -256,6 +289,8 @@ static void cfgSave()
     g_prefs.putUChar ("sound",   g_cfg.sound);
     g_prefs.putUChar ("offs",    g_cfg.screenOffS);
     g_prefs.putUChar ("slps",    g_cfg.sleepAfterS);
+    g_prefs.putUShort("hue1",    g_cfg.themeHue);
+    g_prefs.putUShort("hue2",    g_cfg.runHue);
 }
 
 // ------------------------------------------------------------
@@ -287,15 +322,15 @@ static void cfgService()                     // 每帧调用：静置够了就�
 
 static void histSave()
 {
-    g_prefs.putBytes("hist", g_hist, sizeof(g_hist));
+    g_prefs.putBytes("hist2", g_hist, sizeof(g_hist));
 }
 
 // 把某天成绩压入历史（同一天则覆盖）
-static void histPush(int32_t day, uint32_t steps)
+static void histPush(int32_t day, uint32_t steps, uint32_t run)
 {
     if (day <= 0) return;
     for (int i = 0; i < HIST_DAYS; ++i) {
-        if (g_hist[i].day == day) { g_hist[i].steps = steps; return; }
+        if (g_hist[i].day == day) { g_hist[i].steps = steps; g_hist[i].run = run; return; }
     }
     // 找一个空位，否则挤掉最旧的
     int slot = -1;
@@ -306,6 +341,7 @@ static void histPush(int32_t day, uint32_t steps)
     }
     g_hist[slot].day   = day;
     g_hist[slot].steps = steps;
+    g_hist[slot].run   = run;
 }
 
 // 按日期升序取第 k 条（k=0 最早）
@@ -317,22 +353,25 @@ static DayRec histAt(int k)
     for (int i = 0; i < n; ++i)
         for (int j = i + 1; j < n; ++j)
             if (tmp[j].day < tmp[i].day) { DayRec t = tmp[i]; tmp[i] = tmp[j]; tmp[j] = t; }
-    DayRec empty = {0, 0};
+    DayRec empty = {0, 0, 0};
     return (k < n) ? tmp[k] : empty;
 }
 
 // 归档：只在不小于已有值时更新。
 // NVS 与 RTC 内存两套状态可能先后不一，直接覆盖会把真实记录抹成 0。
-static void histArchive(int32_t day, uint32_t steps)
+static void histArchive(int32_t day, uint32_t steps, uint32_t run)
 {
     if (day <= 0) return;
     for (int i = 0; i < HIST_DAYS; ++i) {
         if (g_hist[i].day == day) {
-            if (steps > g_hist[i].steps) g_hist[i].steps = steps;
+            if (steps > g_hist[i].steps) {
+                g_hist[i].steps = steps;
+                g_hist[i].run   = run;
+            }
             return;
         }
     }
-    histPush(day, steps);
+    histPush(day, steps, run);
 }
 
 // 把「今天」的实时成绩同步进历史数组（只改内存，跨天时才 histSave）
@@ -340,9 +379,13 @@ static void histSyncToday()
 {
     if (g_dayKey <= 0) return;
     for (int i = 0; i < HIST_DAYS; ++i) {
-        if (g_hist[i].day == g_dayKey) { g_hist[i].steps = g_steps; return; }
+        if (g_hist[i].day == g_dayKey) {
+            g_hist[i].steps = g_steps;
+            g_hist[i].run   = g_runSteps;
+            return;
+        }
     }
-    histPush(g_dayKey, g_steps);
+    histPush(g_dayKey, g_steps, g_runSteps);
 }
 
 static uint32_t histAvg()
@@ -359,14 +402,16 @@ static void loadToday()
 {
     int32_t savedDay = (int32_t)g_prefs.getInt("day", 0);
     g_steps     = (uint32_t)g_prefs.getUInt("steps", 0);
+    g_runSteps  = (uint32_t)g_prefs.getUInt("run", 0);
     g_activeSec = g_prefs.getUInt("active", 0);
 
     int32_t today = todayKey();
     if (today != 0) {
         if (savedDay != 0 && savedDay != today) {
-            histArchive(savedDay, g_steps);
+            histArchive(savedDay, g_steps, g_runSteps);
             histSave();
             g_steps = 0;
+            g_runSteps = 0;
             g_activeSec = 0;
             g_nextMilestone = 1000;
         }
@@ -382,11 +427,13 @@ static void saveToday(bool force = false)
 {
     if (!force && g_steps == g_savedSteps) return;
     g_prefs.putUInt("steps", g_steps);
+    g_prefs.putUInt("run",   g_runSteps);
     g_prefs.putUInt("active", g_activeSec);
     if (g_dayKey) g_prefs.putInt("day", g_dayKey);
     // RTC 内存同步：深睡醒来合并时靠它取较大值，
     // 两处长期不一致会让归档拿到旧值（0），把历史柱状图抹平
     g_rtc.steps     = g_steps;
+    g_rtc.run       = g_runSteps;
     g_rtc.activeSec = g_activeSec;
     if (g_dayKey) g_rtc.dayKey = g_dayKey;
     g_savedSteps = g_steps;
@@ -398,9 +445,10 @@ static void rolloverIfNeeded()
     int32_t k = todayKey();
     if (k == 0) return;
     if (g_dayKey != 0 && k != g_dayKey) {
-        histArchive(g_dayKey, g_steps);
+        histArchive(g_dayKey, g_steps, g_runSteps);
         histSave();
         g_steps = 0;
+        g_runSteps = 0;
         g_activeSec = 0;
         cadenceClear();
         g_nextMilestone = 1000;

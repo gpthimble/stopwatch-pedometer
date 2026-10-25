@@ -62,6 +62,14 @@ static constexpr uint8_t PAGE_STEP_PHONE = 4;
 static constexpr uint8_t PHONE_EN_BYTE   = 1;
 static constexpr uint32_t PHONE_CFG_SIZE = 8192;
 
+// 步态输出（STEP_ACTIVITY）：
+//   使能位 = page4 字节 1 的 bit5（BMI2_STEP_ACT_FEAT_EN_MASK = 0x20）
+//   输出   = page0 字节 4，0 静止 / 1 步行 / 2 跑步 / 3 未知
+static constexpr uint8_t STEP_ACT_BIT = 0x20;
+static constexpr uint8_t ACT_STILL    = 0;
+static constexpr uint8_t ACT_WALK     = 1;
+static constexpr uint8_t ACT_RUN      = 2;
+
 enum : uint8_t { MODE_WRIST = 0, MODE_PHONE = 1 };
 
 uint8_t  mode       = MODE_WRIST;   // 实际生效的模式
@@ -121,7 +129,7 @@ static bool readPage(uint8_t pg, uint8_t buf[16])
 // · 灵敏度异常（正常摆臂不计数、大摆臂才触发且双计）的对账结果：唯一能正常
 //   计数的配置（22:02 实验 chip=36）与其他版本的差异是 IF_CONF=0x00 —— 辅机
 //   I2C 使能时 feature 引擎时序被干扰。本版恢复 IF_CONF=0x00。
-// · act 字段：en_activity 从未使能，page0 字节 4-5 不是有效活动状态，仅供参考。
+// · 步态输出：使能 page4 字节 1 的 bit5（en_step_act），输出在 page0 字节 4。
 // · 官方渠道（数据手册/AN000/API/M5Unified/官方 demo）均无"口袋参数表"，
 //   Table 15 腕戴参数是唯一公开配置；参数保持出厂，不再自写。
 // ---------------- 8 KB 微码上传 ----------------
@@ -195,7 +203,7 @@ bool beginPhone()
     for (int i = 0; i < 16; ++i) Serial.printf(" %02X", chk[i]);
     Serial.println();
 
-    chk[PHONE_EN_BYTE] |= STEP_EN_BIT;      // en_counter = bit4
+    chk[PHONE_EN_BYTE] |= (STEP_EN_BIT | STEP_ACT_BIT);   // en_counter + en_step_act
     if (!wr8(R_FEAT_PAGE, PAGE_STEP_PHONE)) { dbgErr = 3; ready = false; return false; }
     delayMicroseconds(400);
     if (!M5.In_I2C.writeRegister(ADDR_IMU, R_FEAT_DATA, chk, 16, 400000)) {
@@ -206,7 +214,8 @@ bool beginPhone()
     // 回读校验
     if (readPage(PAGE_STEP_PHONE, chk)) {
         memcpy(dbgPage6, chk, 16);          // 复用缓冲：此处装的是 page 4
-        dbgVerify |= (chk[PHONE_EN_BYTE] & STEP_EN_BIT) ? 0x01 : 0x00;
+        dbgVerify |= (chk[PHONE_EN_BYTE] & STEP_EN_BIT)  ? 0x01 : 0x00;
+        dbgVerify |= (chk[PHONE_EN_BYTE] & STEP_ACT_BIT) ? 0x04 : 0x00;
     }
     if (readPage(PAGE_OUT, chk)) memcpy(dbgPage0, chk, 16);
 
@@ -250,9 +259,9 @@ bool beginWrist()
         }
     }
 
-    // 使能步计数器（仅 en_counter，bit4；不碰 detector/activity）
+    // 使能步计数器与步态输出（bit4 = en_counter，bit5 = en_step_act）
     if (!readPage(PAGE_CFG, chk)) { dbgErr = 2; ready = false; return false; }
-    chk[3] |= STEP_EN_BIT;
+    chk[3] |= (STEP_EN_BIT | STEP_ACT_BIT);
     if (!wr8(R_FEAT_PAGE, PAGE_CFG)) { dbgErr = 3; ready = false; return false; }
     delayMicroseconds(400);
     if (!M5.In_I2C.writeRegister(ADDR_IMU, R_FEAT_DATA, chk, 16, 400000)) {
@@ -264,8 +273,9 @@ bool beginWrist()
     dbgVerify = 0;
     if (readPage(PAGE_CFG, chk)) {
         memcpy(dbgPage6, chk, 16);
-        // en_counter = page6 字节 3 bit4，应已置位
-        dbgVerify |= (chk[3] & STEP_EN_BIT) ? 0x01 : 0x00;
+        // en_counter / en_step_act = page6 字节 3 bit4 / bit5
+        dbgVerify |= (chk[3] & STEP_EN_BIT)  ? 0x01 : 0x00;
+        dbgVerify |= (chk[3] & STEP_ACT_BIT) ? 0x04 : 0x00;
     }
     if (readPage(PAGE_PARAMS, chk)) {
         dbgParam = (uint16_t)(chk[0] | (chk[1] << 8));
@@ -301,7 +311,8 @@ bool begin()
 }
 
 // ---------------- 读计数 ----------------
-// count = page 0 的 32 位步数；act = 同页字节 4-5（en_activity 未使能，值无意义）
+// count = page 0 的 32 位步数
+// act   = 同页字节 4 的步态：0 静止 / 1 步行 / 2 跑步 / 3 未知
 bool readSteps(uint32_t *count, uint32_t *act)
 {
     uint8_t b[16];
@@ -309,7 +320,7 @@ bool readSteps(uint32_t *count, uint32_t *act)
 
     *count = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
              ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-    if (act) *act = (uint32_t)b[4] | ((uint32_t)b[5] << 8);
+    if (act) *act = (uint32_t)(b[4] & 0x03);
 
     memcpy(dbgPage0, b, 16);
     lastCount = *count;

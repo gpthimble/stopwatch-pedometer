@@ -23,6 +23,7 @@ SPECS = [
     ("L",   YAHEI,   27, 0, "cjk"),
     ("S",   YAHEI_B, 20, 0, "cjk"),
     ("SM",  YAHEI,   21, 0, "cjk"),
+    ("TINY", ARIAL_B, 15, 0, "num"),
     ("NUM", ARIAL_B, 78, 0, "num"),
     ("BIG", ARIAL_B, 100, 0, "num"),
     ("HUGE", ARIAL_B, 120, 0, "num"),
