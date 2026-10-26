@@ -179,6 +179,8 @@ static void mergeRtcState()
                       (long)g_rtc.dayKey, (long)today, (unsigned)g_rtc.steps);
         histArchive(g_rtc.dayKey, g_rtc.steps, g_rtc.run);
         histSave();
+        bktHistPut(g_rtc.dayKey, g_rtc.bktLvl);   // 睡眠期间的那份分时也要存
+        bktHistSave();
         g_rtc.steps     = 0;
         g_rtc.run       = 0;
         g_rtc.activeSec = 0;
@@ -289,6 +291,16 @@ static void dbgPoll()
             pageNext(); g_forceRender = true;
         } else if (ch == 'p') {
             pagePrev(); g_forceRender = true;
+        } else if (ch == 'd') {
+            // 调试：历史子视图逐日翻页（-1 柱状图 → 0 今天 → … → 6 六天前）。
+            // 走和触摸一样的过渡路径，好确认动画代码在真机上不黑屏、不卡死
+            if (g_page != PG_HIST) { g_page = PG_HIST; g_histIdx = -1; }
+            int n = g_histIdx + 1;
+            if (n >= HIST_DAYS) n = -1;
+            if (g_canvasPrevReady) uiSnapshot();
+            g_histIdx = n;
+            uiSlideAfter(true, +1);
+            Serial.printf("[d] histIdx=%d\n", g_histIdx);
         } else if (ch == 't') {
             g_timeMode ^= 1; g_forceRender = true;      // 对时页：日期/时间
         } else if (ch == 'u') {
@@ -334,11 +346,29 @@ static void dbgPoll()
             int32_t base = todayKey();
             if (base <= 0) base = g_dayKey;
             memset(g_hist, 0, sizeof(g_hist));
+            memset(g_bktHist, 0, sizeof(g_bktHist));
             for (int i = 0; i < HIST_DAYS && base > 0; ++i) {
                 const int32_t d = keyShift(base, -(HIST_DAYS - 1 - i));
-                if (sSt[i]) histPush(d, sSt[i], sRn[i]);
+                if (!sSt[i]) continue;
+                histPush(d, sSt[i], sRn[i]);
+
+                // 顺带编一段分时轨迹，好核对每日详情里的 24 小时外环：
+                // 早上走、中午走、傍晚跑，每天整体错开几分钟
+                static const int sWin[3][3] = {{7 * 60 + 40, 22, 1},
+                                               {12 * 60 + 20, 18, 1},
+                                               {19 * 60 + 10, 26, 2}};
+                DayBuckets tmp;
+                memset(&tmp, 0, sizeof(tmp));
+                for (int w = 0; w < 3; ++w) {
+                    for (int m = 0; m < sWin[w][1]; ++m) {
+                        const int b = sWin[w][0] + i * 9 + m;
+                        if (b >= 0 && b < BKT_N) bktPut(tmp.lvl, b, (uint8_t)sWin[w][2]);
+                    }
+                }
+                bktHistPut(d, tmp.lvl);
             }
             histSave();
+            bktHistSave();
             Serial.printf("[H] history seeded base=%ld\n", (long)base);
             g_forceRender = true;
         } else if (ch == 'A') {

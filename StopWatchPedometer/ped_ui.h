@@ -36,6 +36,11 @@ static void applyTheme()
 
 static int g_w = 466, g_h = 466, g_cx = 233, g_cy = 233;
 
+// 竖向位置点所在列。有环的页面（主页、每日详情）要放进内环以内（半径 191），
+// 否则会压在环带上；设置页右侧到 x=432 全被胶囊占满，只能贴着屏幕外沿。
+#define VDOT_X       (g_cx + 165)
+#define VDOT_X_EDGE  (g_w - 30)
+
 // 只在「条带」与 [y0,y1) 的交集上清背景。
 // 整屏渲染时等价于 fillRect(0,y0,g_w,h)；条带渲染时不会去写带外的像素
 // （PSRAM 上的 writePixel 是 read-modify-write，白写就是纯浪费）。
@@ -332,16 +337,18 @@ static inline int cwHueOf(int dx, int dy)
 // 时间轴外环：整圈按当天 1440 个 1 分钟时段等分，0 点在正上方。
 // 已过的时段按该分钟的强度取色：无步数 = 静止色，走路 = 主题色，跑步 = 强调色。
 // 当前分钟只涂到此刻为止，其后与未到的分钟用更暗的未来色。
-static void drawRingTimeline(float rOut, float rIn, float span,
-                             uint16_t cIdle, uint16_t cFuture,
-                             uint16_t cWalk, uint16_t cRun)
+// lvl/cur/frac 显式传入：主页用今日实时那份，历史详情用归档的某一天。
+// 历史日已走完 24 小时（cur = 最后一格、frac = 1），整圈都会按记录取色。
+static void drawRingTimelineOf(float rOut, float rIn, float span,
+                               uint16_t cIdle, uint16_t cFuture,
+                               uint16_t cWalk, uint16_t cRun,
+                               const uint8_t *lvl, int cur, float frac)
 {
     if (rIn < 0.0f) rIn = 0.0f;
     if (rIn >= rOut) return;
     if (span >= 360.0f) span = 360.0f;
 
-    const int   cur = g_bktCur;
-    const float k   = (float)BKT_N / (span > 0.5f ? span : 0.5f);
+    const float k = (float)BKT_N / (span > 0.5f ? span : 0.5f);
     const int yBeg = (int)floorf(g_cy - rOut);
     const int yEnd = (int)ceilf (g_cy + rOut);
 
@@ -382,10 +389,10 @@ static void drawRingTimeline(float rOut, float rIn, float span,
                     if (b < 0) b = 0;
                     if (b >= BKT_N) b = BKT_N - 1;
                     // 当前分钟只涂到此刻，其余按该分钟记录的强度取色
-                    if (b > cur || (b == cur && (idx - (float)b) > g_bktFrac)) {
+                    if (b > cur || (b == cur && (idx - (float)b) > frac)) {
                         c = cFuture;
                     } else {
-                        const uint8_t lv = bktGet(g_bkt.lvl, b);
+                        const uint8_t lv = bktGet(lvl, b);
                         c = (lv == 2) ? cRun : (lv == 1 ? cWalk : cIdle);
                     }
                 }
@@ -393,6 +400,15 @@ static void drawRingTimeline(float rOut, float rIn, float span,
             }
         }
     }
+}
+
+// 今日版：直接读 g_bkt 与当前时刻
+static void drawRingTimeline(float rOut, float rIn, float span,
+                             uint16_t cIdle, uint16_t cFuture,
+                             uint16_t cWalk, uint16_t cRun)
+{
+    drawRingTimelineOf(rOut, rIn, span, cIdle, cFuture, cWalk, cRun,
+                       g_bkt.lvl, g_bktCur, g_bktFrac);
 }
 
 // 圆形填充，边缘抗锯齿
@@ -418,6 +434,27 @@ static void fillCircleAA(float ccx, float ccy, float r, uint16_t col)
             if (cov > 1.0f) cov = 1.0f;
             ui->writePixel(x, y, shade565(col, (uint32_t)(cov * 255.0f + 0.5f)));
         }
+    }
+}
+
+// 竖向位置点：本页还有上下可滑的内容时，在右侧列一列小圆点，
+// 当前所在位置用亮色加粗。比原来贴一行「上下滑动 · xxx」干净，
+// 也不会和背景里那几行字挤在一起。
+// x 由调用方给：有环的页面放进内环以内，设置页右侧被胶囊占满，只能贴最外沿。
+static void drawVDots(int n, int cur, int x)
+{
+    if (n < 2) return;
+    if (cur < 0) cur = 0;
+    if (cur >= n) cur = n - 1;
+
+    const int gap = 12;
+    const int y0  = g_cy - (n - 1) * gap / 2;
+    const uint16_t cOff = shade565(C_DIM, 130);   // 暗到不抢画面，又不至于看不见
+
+    for (int i = 0; i < n; ++i) {
+        const bool on = (i == cur);
+        fillCircleAA((float)x, (float)(y0 + i * gap),
+                     on ? 3.4f : 2.6f, on ? C_TEXT : cOff);
     }
 }
 
@@ -459,7 +496,9 @@ static void drawBattery(int cx, int cy, int pct, bool usb)
 
     const uint16_t on  = usb ? C_ACCENT
                              : (pct >= 40 ? C_ACCENT : (pct >= 20 ? C_GOLD : C_WARN));
-    const uint16_t off = usb ? shade565(C_ACCENT, 90) : C_TRACK;
+    // 空格子原来用 C_TRACK（26,28,32），在纯黑上几乎看不见，
+    // 会让人以为只有亮着的那几格。改成看得出来的灰。
+    const uint16_t off = usb ? shade565(C_ACCENT, 110) : shade565(C_DIM, 118);
 
     int lit = (pct < 0) ? 0 : (pct + 24) / 25;   // 0..4；读不到电量就全空
     if (pct > 0 && lit < 1) lit = 1;
@@ -589,13 +628,13 @@ static inline float sminQ(float a, float b, float k)
 // 齿身只沿光轴做一层渐变，不描边、不打轮廓光 —— 图标越简单越像齿轮。
 static void drawGear(int ccx, int ccy)
 {
-    const float R0   = 74.0f;                  // 齿根圆
-    const float R1   = 96.0f;                  // 齿顶圆
-    const float WR   = 18.0f;                  // 齿根处的半齿宽
-    const float WT   = 14.5f;                  // 齿顶处的半齿宽
-    const float RH   = 32.0f;                  // 轴孔
+    const float R0   = 66.5f;                  // 齿根圆
+    const float R1   = 86.0f;                  // 齿顶圆
+    const float WR   = 16.0f;                  // 齿根处的半齿宽
+    const float WT   = 13.0f;                  // 齿顶处的半齿宽
+    const float RH   = 29.0f;                  // 轴孔
     const float step = 0.7853982f;             // 2π/8
-    const float K    = 5.0f;                   // 齿根/齿顶圆角
+    const float K    = 4.5f;                   // 齿根/齿顶圆角
 
     const float sat = 0.90f;                   // 与 themeColor() 同一基色
     const float val = g_cfg.themeVal / 100.0f;
@@ -659,11 +698,12 @@ static void drawGear(int ccx, int ccy)
     }
 }
 
-// 设置不与其它页面同级翻页，单独一页作入口，点按后才进入列表
+// 设置不与其它页面同级翻页，单独一页作入口，点按后才进入列表。
+// 齿轮圆心就在屏幕中心，「设置」两个字挂在它下方。
 static void drawDoor()
 {
-    drawGear(g_cx, 196);
-    textC(g_cx, 352, "设置", F_H1, C_TEXT);
+    drawGear(g_cx, g_cy);
+    textC(g_cx, g_cy + 118, "设置", F_H1, C_TEXT);
 }
 
 // ------------------------------------------------------------
@@ -689,8 +729,7 @@ static void drawHist()
 {
     char v[32];
     histSyncToday();                 // 今天的实时成绩也算一根柱子
-    textC(g_cx, 78, "近 7 天", F_H1, C_TEXT);
-    textC(g_cx, 112, "上下滑动 · 查看每日", F_S, C_DIM);
+    textC(g_cx, 84, "近 7 天", F_H1, C_TEXT);
 
     const int x0 = 70, x1 = g_w - 70;
     const int yb = 336, yt = 150;
@@ -799,21 +838,31 @@ static void drawHistDay(int idx)
     const float prog = g_cfg.goal ? (float)r.steps / (float)g_cfg.goal : 0.0f;
     const float p    = prog > 1.0f ? 1.0f : prog;
 
-    // 单环：当天目标完成度，环尾按跑步步数占比叠强调色
+    // 双环，与主页同一套几何：
+    // 外圈 = 那天 24 小时的活动状态（0 点在正上方，1 分钟一格），
+    // 内圈 = 那天目标的完成度。
     const float rOut = (float)g_cx - 2.0f;
-    const float rIn  = rOut - 22.0f;
-    drawRingAA(rOut, rIn, -90.0f, 360.0f * p, C_TRACK, C_ACCENT);
-    if (r.steps && r.run) {
-        float f = (float)r.run / (float)r.steps;
-        if (f > 1.0f) f = 1.0f;
-        const float span = 360.0f * p * f;
-        if (span > 0.8f) {
-            drawRingAA(rOut, rIn, -90.0f + 360.0f * p - span, span, C_TRACK, C_RUN, false);
-        }
+    const float oIn  = rOut - 13.0f;
+    const float iOut = oIn - 5.0f;
+    const float iIn  = iOut - 22.0f;
+
+    const uint8_t *lvl = bktForDay(dayK);
+    if (lvl) {
+        // 归档的一整天已经走完：当前格取最后一格、比例取满，整圈都按记录取色
+        drawRingTimelineOf(rOut, oIn, 360.0f, C_BTN, C_TRACK, C_ACCENT, C_RUN,
+                           lvl, BKT_N - 1, 1.0f);
+    } else {
+        // 那天没留下分时数据（老版本记录的，或还没记录）：整圈用轨道色
+        drawRingAA(rOut, oIn, -90.0f, 360.0f, C_TRACK, C_TRACK);
     }
 
-    // 顶部：第几天，日期与星期
-    snprintf(b, sizeof(b), "%s · %d/%d", T("今天", "Today"),
+    uint16_t cFill = C_ACCENT;
+    if (p > 0.85f) cFill = lerp565(C_ACCENT, C_GOLD, (p - 0.85f) / 0.15f);
+    drawRingAA(iOut, iIn, -90.0f, 360.0f * p, C_TRACK, cFill);
+
+    // 顶部：第几天，日期与星期。只有今天才写「今天」，其余都是「历史」
+    snprintf(b, sizeof(b), "%s · %d/%d",
+             (idx == 0) ? T("今天", "Today") : T("历史", "History"),
              idx + 1, HIST_DAYS);
     textC(g_cx, g_cy - 168, b, F_S, C_DIM);
 
@@ -830,7 +879,6 @@ static void drawHistDay(int idx)
     if (!r.day) {
         textC(g_cx, g_cy - 10, "无记录", F_MID, C_DIM);
         textC(g_cx, g_cy + 60, "这一天没有同步过成绩", F_S, shade565(C_DIM, 160));
-        textC(g_cx, 414, "上下滑动 · 切换日期", F_S, C_DIM);
         return;
     }
 
@@ -846,14 +894,13 @@ static void drawHistDay(int idx)
     textC(g_cx, g_cy + 132, b, F_S, C_DIM);
 
     if (r.run) {
-        snprintf(b, sizeof(b), T("跑步 %u 步 · 占 %d%%", "Run %u · %d%%"),
-                 (unsigned)r.run, (int)(100.0f * (float)r.run / (float)r.steps + 0.5f));
+        // 只报占比：带步数的整串在圆屏底部会撑到环上，把图案盖掉
+        snprintf(b, sizeof(b), T("跑步 %d%%", "Run %d%%"),
+                 (int)(100.0f * (float)r.run / (float)r.steps + 0.5f));
         textC(g_cx, g_cy + 166, b, F_S, C_RUN);
     } else {
         textC(g_cx, g_cy + 166, "无跑步记录", F_S, shade565(C_DIM, 160));
     }
-
-    textC(g_cx, 414, "上下滑动 · 切换日期", F_S, C_DIM);
 }
 
 // ------------------------------------------------------------
@@ -886,11 +933,11 @@ static bool rowIsLink(int i) { return i == SET_ROW_TIME || i == SET_ROW_COLOR; }
 
 #define ROW_NAME_X 52             // 名称左端
 #define PILL_X0   208             // 胶囊左端
-#define PILL_X1   432             // 胶囊右端
+#define PILL_X1   412             // 胶囊右端（右侧留出位置点那一列）
 #define PILL_H    40
-#define GLY_MINUS 236             // 减号中心
-#define GLY_PLUS  404             // 加号中心
-#define VAL_CX    320             // 数值中心
+#define GLY_MINUS 226             // 减号中心
+#define GLY_PLUS  394             // 加号中心
+#define VAL_CX    310             // 数值中心
 
 #define WH_CY     276             // 日期轮中心
 #define WH_H      56              // 每个槽位高
@@ -917,6 +964,20 @@ static void timeLoad()
 }
 
 static int rowCount() { return 10; }
+
+// 设置列表按「屏」算，而不是按滚动落位算：
+// 10 项、一屏 5 项就是 2 屏，指示器与位置点都按这个口径，别让人以为有 6 页。
+static int setPageCount() { return (rowCount() + ROW_PAGE - 1) / ROW_PAGE; }
+static int setPageCur()
+{
+    int top = (int)lroundf(g_listPx / (float)ROW_H);
+    if (top < 0) top = 0;
+    const int n = setPageCount();
+    int c = top / ROW_PAGE + 1;
+    if (c < 1) c = 1;
+    if (c > n) c = n;
+    return c;
+}
 
 // 面板亮度内部是 40..255，界面按百分比显示与调节
 static int brightPct()
@@ -1229,11 +1290,7 @@ static void drawSet()
 
     textC(g_cx, 66, "设置", F_H1, C_TEXT);
 
-    const int pages = rowCount() - ROW_PAGE + 1;
-    int cur = (int)lroundf(g_listPx / (float)ROW_H) + 1;
-    if (cur < 1) cur = 1;
-    if (cur > pages) cur = pages;
-    snprintf(v, sizeof(v), "%d/%d", cur, pages);
+    snprintf(v, sizeof(v), "%d/%d", setPageCur(), setPageCount());
     textR(384, 66, v, F_SM, C_DIM);
 
     textC(g_cx, 404, "上下拖动 · 左右切页", F_S, C_DIM);
@@ -1586,6 +1643,19 @@ static void uiSlide(int dir)
     }
 }
 
+// 各页「上下还有内容」的位置点。画在页面内容之后，压在环与文字之上。
+static void drawNavDots()
+{
+    if (g_page == PG_MAIN) {
+        drawVDots(2, g_mainDetail ? 1 : 0, VDOT_X);
+    } else if (g_page == PG_HIST) {
+        // 0 = 柱状图，1..7 = 今天..六天前
+        drawVDots(HIST_DAYS + 1, g_histIdx + 1, VDOT_X);
+    } else if (g_page == PG_SET) {
+        drawVDots(setPageCount(), setPageCur() - 1, VDOT_X_EDGE);
+    }
+}
+
 static void drawPage()
 {
     switch (g_page) {
@@ -1597,6 +1667,7 @@ static void drawPage()
         case PG_COLOR: drawColorWheel(); break;
         default:       drawDebugHw(); break;
     }
+    drawNavDots();
 }
 
 static void uiRender(bool push = true)
@@ -1646,6 +1717,36 @@ static void uiRenderBand(int y0, int y1)
     vibService();
 }
 
+// 竖向翻页过渡：旧页向上/下推出，新页从另一侧进来。
+// dir = +1 新页从下方进（上滑进入下一屏），-1 新页从上方进。
+static void uiSlideV(int dir)
+{
+    if (!g_canvasPrevReady) { g_canvas.pushSprite(0, 0); return; }
+    static const int N = 7;
+    for (int i = 1; i <= N; ++i) {
+        const int d = g_h * i / N;
+        if (dir > 0) {
+            g_canvasPrev.pushSprite(0, -d);
+            g_canvas.pushSprite(0, g_h - d);
+        } else {
+            g_canvasPrev.pushSprite(0, d);
+            g_canvas.pushSprite(0, d - g_h);
+        }
+        vibService();
+    }
+}
+
+// 切屏动画的统一收尾：旧帧已由 uiSnapshot() 存好、状态已改，
+// 这里只负责「画新帧（不推屏）→ 滑过去」。画布不够就退回直接整屏推，
+// 绝不留下半张屏。
+static void uiSlideAfter(bool vert, int dir)
+{
+    if (!g_canvasPrevReady || !g_canvasReady) { uiRender(true); return; }
+    uiRender(false);                 // 只画进画布
+    if (vert) uiSlideV(dir); else uiSlide(dir);
+    g_forceRender = false;
+}
+
 // 触摸/滚轮只改动局部时，标出「本次需要重绘的垂直范围」（并集语义）。
 // 没标记 = 0，调用方按整屏走；这是保守路线 —— 拿不准的一律全屏。
 int  g_dirtyY0 = 0, g_dirtyY1 = 0;
@@ -1657,6 +1758,18 @@ static void uiMarkBand(int y0, int y1)
     if (y1 > g_dirtyY1) g_dirtyY1 = y1;
 }
 static void uiClearBand() { g_dirtyY0 = g_dirtyY1 = 0; }
+
+// 设置行只重绘自己那一条。整屏重绘一次要 140 ms 以上，落在手感上就是
+// 「手指都抬起来了，数值才慢半拍地变」。
+static void markRowBand(int i)
+{
+    const int cy = ROW_Y0 + i * ROW_H - (int)lroundf(g_listPx);
+    int y0 = cy - ROW_H / 2;
+    int y1 = cy + ROW_H / 2 + 1;
+    if (y0 < LIST_VP0) y0 = LIST_VP0;
+    if (y1 > LIST_VP1) y1 = LIST_VP1;
+    uiMarkBand(y0, y1);
+}
 
 // 日期轮松手：不足半格弹回，超过半格补一格，然后缓出归零
 static void wheelSnap(int c)
@@ -1762,8 +1875,12 @@ static void histStep(int dir)
     int n = g_histIdx + dir;
     if (n < -1)              n = HIST_DAYS - 1;
     if (n >= HIST_DAYS)      n = -1;
+    if (n == g_histIdx) return;
+
+    uiTick();                    // 手感先发，别让动画抢在震动前面
+    if (g_canvasPrevReady) uiSnapshot();
     g_histIdx = n;
-    uiTick();
+    uiSlideAfter(true, dir);     // 新的一天从对应方向滑进来
 }
 
 static void enterTimePage()
@@ -1954,9 +2071,11 @@ static bool uiTap(int x, int y)
 
     // ---------------- 历史的某一天 ----------------
     if (g_page == PG_HIST && g_histIdx >= 0) {
+        uiSettle();                   // 手感先发
+        if (g_canvasPrevReady) uiSnapshot();
         g_histIdx = -1;
-        uiSettle();
-        return true;
+        uiSlideAfter(true, -1);       // 退回柱状图：新页从上方落下
+        return false;                 // 动画已经推过了，不必再整屏重绘
     }
 
     if (g_page != PG_SET) { pageNext(); return true; }
@@ -1978,6 +2097,7 @@ static bool uiTap(int x, int y)
         if (x >= PILL_X0 && x <= PILL_X1) {
             rowAdjust(i, (x < VAL_CX) ? -1 : +1);
             uiTick();
+            markRowBand(i);          // 只重画这一行，别为了一格数字整屏重绘
         }
         return true;
     }
@@ -2079,6 +2199,7 @@ static bool uiTouch(uint32_t now)
                 if ((int32_t)(now - g_btnNextMs) >= 0) {
                     rowAdjust(g_pressRow, g_pressBtn);
                     uiTick();
+                    markRowBand(g_pressRow);
                     g_btnNextMs = now + 140;
                     return true;
                 }
@@ -2175,15 +2296,16 @@ static bool uiTouch(uint32_t now)
         if (vswipe) {
             if (g_page == PG_MAIN) {
                 const bool detail = (dy < 0);        // 上滑进入详情，下滑退回主页
-                if (detail != g_mainDetail) {
-                    g_mainDetail = detail;
-                    uiSettle();
-                }
-                return true;
+                if (detail == g_mainDetail) return false;   // 已经在目标子页
+                uiSettle();                          // 手感先发，别等动画走完再震
+                if (g_canvasPrevReady) uiSnapshot();
+                g_mainDetail = detail;
+                uiSlideAfter(true, detail ? +1 : -1);       // 详情从下方进，退回则从上方
+                return false;                        // 新帧已经由动画推上去了
             }
             if (g_page == PG_HIST) {
                 histStep(dy < 0 ? +1 : -1);
-                return true;
+                return false;
             }
         }
 
@@ -2218,6 +2340,7 @@ static bool uiTouch(uint32_t now)
                 if (g_pressBtn != 0 && g_pressRow >= 0 && !rowIsLink(g_pressRow)) {
                     rowAdjust(g_pressRow, g_pressBtn);
                     uiTick();
+                    markRowBand(g_pressRow);
                     return true;
                 }
                 return uiTap(t.x, t.y);                  // 对时入口等
@@ -2261,10 +2384,8 @@ static bool uiTouch(uint32_t now)
                 if (dx < 0) timeNext(); else timeBack();
             } else if (g_page == PG_COLOR) {
                 if (dx < 0) colorNext(); else colorPrev();
-            } else if (dx < 0) {
-                pageNext();
             } else {
-                pagePrev();
+                if (dx < 0) pageNext(); else pagePrev();
             }
             return true;
         }

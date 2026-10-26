@@ -198,6 +198,75 @@ uint32_t g_activeSec  = 0;   // 今日活跃秒数
 int32_t  g_dayKey     = 0;   // 今日日期键
 uint32_t g_savedSteps = 0xFFFFFFFFu;
 
+// ------------------------------------------------------------
+// 归档的分时明细
+// 跨天时把昨天的 1440 格一并存下来，历史页的每日详情才能画出
+// 那一天的 24 小时外环。一天 364 B，七天约 2.5 KB，
+// NVS 里分 bh0..bh6 七个键存（每个 364 B，远低于单条上限）。
+// ------------------------------------------------------------
+static constexpr int BKT_BYTES = BKT_N / 4;
+
+struct DayBkt
+{
+    int32_t day;                 // YYYYMMDD，0 = 空
+    uint8_t lvl[BKT_BYTES];
+};
+
+DayBkt g_bktHist[HIST_DAYS];
+
+static void bktHistLoad()
+{
+    char k[8];
+    memset(g_bktHist, 0, sizeof(g_bktHist));
+    for (int i = 0; i < HIST_DAYS; ++i) {
+        snprintf(k, sizeof(k), "bh%d", i);
+        if (g_prefs.getBytesLength(k) == (size_t)sizeof(DayBkt)) {
+            g_prefs.getBytes(k, &g_bktHist[i], sizeof(DayBkt));
+        }
+    }
+}
+
+static void bktHistSave()
+{
+    char k[8];
+    for (int i = 0; i < HIST_DAYS; ++i) {
+        snprintf(k, sizeof(k), "bh%d", i);
+        g_prefs.putBytes(k, &g_bktHist[i], sizeof(DayBkt));
+    }
+}
+
+// 归档某天的分时明细（同一天覆盖，新日期挤掉最旧的一条）
+static void bktHistPut(int32_t day, const uint8_t *lvl)
+{
+    if (day <= 0 || !lvl) return;
+
+    for (int i = 0; i < HIST_DAYS; ++i) {
+        if (g_bktHist[i].day == day) { memcpy(g_bktHist[i].lvl, lvl, BKT_BYTES); return; }
+    }
+
+    int slot = -1;
+    for (int i = 0; i < HIST_DAYS; ++i) if (g_bktHist[i].day == 0) { slot = i; break; }
+    if (slot < 0) {
+        int32_t oldest = g_bktHist[0].day; slot = 0;
+        for (int i = 1; i < HIST_DAYS; ++i) {
+            if (g_bktHist[i].day < oldest) { oldest = g_bktHist[i].day; slot = i; }
+        }
+    }
+    g_bktHist[slot].day = day;
+    memcpy(g_bktHist[slot].lvl, lvl, BKT_BYTES);
+}
+
+// 取某天的分时明细：今天直接给实时的这份，其余查归档
+static const uint8_t *bktForDay(int32_t day)
+{
+    if (day <= 0) return nullptr;
+    if (day == g_dayKey) return g_bkt.lvl;
+    for (int i = 0; i < HIST_DAYS; ++i) {
+        if (g_bktHist[i].day == day) return g_bktHist[i].lvl;
+    }
+    return nullptr;
+}
+
 int      g_page       = 0;
 int      g_setScroll  = 0;
 uint8_t  g_bright     = 0;
@@ -394,6 +463,8 @@ static void cfgLoad()
     if (g_prefs.getBytesLength("hist2") == sizeof(g_hist)) {
         g_prefs.getBytes("hist2", g_hist, sizeof(g_hist));
     }
+
+    bktHistLoad();          // 归档的每日分时明细（历史详情的外环）
 }
 
 static void cfgSave()
@@ -571,6 +642,9 @@ static void loadToday()
                           (long)savedDay, (long)today, (unsigned)g_steps);
             histArchive(savedDay, g_steps, g_runSteps);
             histSave();
+            // 分时明细要在 bucketClear 之前归档，之后原件就没了
+            bktHistPut(savedDay, g_bkt.lvl);
+            bktHistSave();
             g_steps = 0;
             g_runSteps = 0;
             g_activeSec = 0;
@@ -645,6 +719,8 @@ static void rolloverIfNeeded()
                   (long)g_dayKey, (long)k, (unsigned)g_steps);
     histArchive(g_dayKey, g_steps, g_runSteps);
     histSave();
+    bktHistPut(g_dayKey, g_bkt.lvl);   // 同样要在 bucketClear 之前存
+    bktHistSave();
     g_steps = 0;
     g_runSteps = 0;
     g_activeSec = 0;
