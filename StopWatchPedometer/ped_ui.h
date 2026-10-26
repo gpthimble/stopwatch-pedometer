@@ -574,34 +574,95 @@ static void drawStats()
 // ------------------------------------------------------------
 // 设置入口
 // ------------------------------------------------------------
-// 齿轮：8 个齿，齿顶与齿根按角度切换，中心留孔，边缘按覆盖率混合
-static void drawGear(int ccx, int ccy, uint16_t col)
+// 齿角圆化：和距离场配合的多项式 smooth-min，k 越大圆角越大
+static inline float sminQ(float a, float b, float k)
 {
-    const float R0   = 60.0f;                  // 齿根
-    const float R1   = 94.0f;                  // 齿顶
-    const float RH   = 32.0f;                  // 中心孔
-    const float step = 6.28318531f / 8.0f;     // 每齿 45°
-    const float half = 0.19f;                  // 齿的半角
+    float h = 0.5f + 0.5f * (b - a) / k;
+    if (h < 0.0f) h = 0.0f;
+    else if (h > 1.0f) h = 1.0f;
+    return b + (a - b) * h - k * h * (1.0f - h);
+}
 
-    const int r1 = (int)R1 + 2;
+// 齿轮：10 齿 + 轴孔。齿顶弧、齿侧、齿根弧、轴孔各自是解析边界，按符号距离
+// 求覆盖率后与底色混合，所以齿侧的斜边、齿顶、轴孔都是抗锯齿的（旧版本用
+// 扇形三角形栅格化，窄处会漏像素，就是那些黑点的来源）。
+// 齿身沿左上→右下插值出渐变，外轮廓朝光侧叠一层高光、背光侧压暗，
+// 轴孔内壁再压一圈接触阴影 —— 平面图标才有金属的立体感。
+static void drawGear(int ccx, int ccy)
+{
+    const float R0   = 72.0f;                  // 齿根圆
+    const float R1   = 99.0f;                  // 齿顶圆
+    const float W0   = 11.5f;                  // 齿的半宽（到齿中心线的垂距，齿宽恒定）
+    const float RH   = 38.0f;                  // 轴孔
+    const float step = 0.6283185f;             // 2π/10
+    const float K    = 2.5f;                   // 齿角圆化
+
+    const float sat = 0.90f;                   // 与 themeColor() 同一基色
+    const float val = g_cfg.themeVal / 100.0f;
+    const uint16_t cLit  = hsv565(g_cfg.themeHue, sat * 0.50f, fminf(1.0f, val + 0.08f));
+    const uint16_t cDeep = hsv565(g_cfg.themeHue, 1.00f,       val * 0.40f);
+    const uint16_t cSpec = hsv565(g_cfg.themeHue, 0.06f, 1.00f);
+
+    const float LX = -0.45f, LY = -0.89f;      // 光从左上方来
+    const float inv2R = 1.0f / (2.0f * R1);
+    const int   r1 = (int)R1 + 2;
+
     for (int y = ccy - r1; y <= ccy + r1; ++y) {
         if (y < g_bandY0 || y >= g_bandY1) continue;
         const float dy = (float)y + 0.5f - (float)ccy;
         for (int x = ccx - r1; x <= ccx + r1; ++x) {
             if (x < 0 || x >= g_w) continue;
             const float dx = (float)x + 0.5f - (float)ccx;
-            const float r  = sqrtf(dx * dx + dy * dy);
-            if (r > R1 + 1.0f) continue;
+            const float r2 = dx * dx + dy * dy;
+            if (r2 > (R1 + 1.5f) * (R1 + 1.5f)) continue;
+            const float r = sqrtf(r2);
 
-            float d = fmodf(cwAtan2(dy, dx) + step * 0.5f, step);
-            if (d < 0.0f) d += step;
-            d -= step * 0.5f;                            // 到最近齿中心的角距
-            const float rEdge = (fabsf(d) < half) ? R1 : R0;
+            float a = fmodf(cwAtan2(dy, dx) + step * 0.5f, step);
+            if (a < 0.0f) a += step;
+            a = fabsf(a - step * 0.5f);                      // 到最近齿中心的角距
+            const float u = r * sinf(a);                     // 到齿中心线的垂距
 
-            float cov = fminf(0.5f + (rEdge - r), 0.5f + (r - RH));
+            // 齿根圆以内是轮体；以外看这一角度上方是齿顶弧还是齿根弧
+            float d;
+            if (r < R0) {
+                d = R0 - r;
+            } else {
+                const float dArc = ((u < W0) ? R1 : R0) - r;
+                const float dSid = W0 - u;
+                d = (dSid > 0.0f) ? sminQ(dArc, dSid, K)
+                                  : -sminQ(-dArc, -dSid, K);
+            }
+            d = fminf(d, r - RH);                            // 挖掉轴孔
+
+            float cov = 0.5f + d;
             if (cov <= 0.0f) continue;
             if (cov > 1.0f) cov = 1.0f;
-            ui->writePixel(x, y, shade565(col, (uint32_t)(cov * 255.0f + 0.5f)));
+
+            // 渐变：沿光轴线性插值，亮面在左上
+            float t = 0.5f - (dx * LX + dy * LY) * inv2R;
+            if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+            uint16_t c = lerp565(cLit, cDeep, t);
+
+            // 轴孔内壁的接触阴影
+            float hq = (r - RH) * 0.125f;                    // 约 8 px 的过渡带
+            if (hq < 1.0f) {
+                if (hq < 0.0f) hq = 0.0f;
+                c = shade565(c, (uint32_t)(255.0f - 70.0f * (1.0f - hq)));
+            }
+
+            // 外轮廓：朝光侧高光、背光侧暗边。只在 r ≥ 齿根处做，
+            // 因为轮体内部并没有边界，那里画边会留下假的一道圆环。
+            if (r >= R0) {
+                float q = d * (1.0f / 3.6f);
+                if (q < 0.0f) q = 0.0f; else if (q > 1.0f) q = 1.0f;
+                if (q < 1.0f) {
+                    const float e = 1.0f - q;
+                    const float l = (dx * LX + dy * LY) / (r > 0.5f ? r : 0.5f);
+                    if (l > 0.0f) c = lerp565(c, cSpec, e * l * 0.55f);
+                    else          c = shade565(c, (uint32_t)(255.0f - e * (-l) * 120.0f));
+                }
+            }
+            ui->writePixel(x, y, (cov >= 0.996f) ? c : lerp565(C_BG, c, cov));
         }
     }
 }
@@ -609,9 +670,8 @@ static void drawGear(int ccx, int ccy, uint16_t col)
 // 设置不与其它页面同级翻页，单独一页作入口，点按后才进入列表
 static void drawDoor()
 {
-    drawGear(g_cx, 204, themeColor());
+    drawGear(g_cx, 196);
     textC(g_cx, 352, "设置", F_H1, C_TEXT);
-    textC(g_cx, 390, "点按进入", F_S, C_DIM);
 }
 
 // ------------------------------------------------------------
