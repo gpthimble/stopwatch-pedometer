@@ -327,6 +327,43 @@ static void dbgPoll()
             g_steps = 0; g_activeSec = 0;   // 调试：清零并落盘
             saveToday(true);
             Serial.println("[z] cleared");
+        } else if (ch == 'H') {
+            // 调试：写 6 天历史（今天沿用实时成绩），用于核对柱状图与逐日页
+            static const uint32_t sSt[HIST_DAYS] = {5200, 8600, 3100, 12400, 7400, 9800, 0};
+            static const uint32_t sRn[HIST_DAYS] = {0, 2100, 900, 5200, 1500, 3600, 0};
+            int32_t base = todayKey();
+            if (base <= 0) base = g_dayKey;
+            memset(g_hist, 0, sizeof(g_hist));
+            for (int i = 0; i < HIST_DAYS && base > 0; ++i) {
+                const int32_t d = keyShift(base, -(HIST_DAYS - 1 - i));
+                if (sSt[i]) histPush(d, sSt[i], sRn[i]);
+            }
+            histSave();
+            Serial.printf("[H] history seeded base=%ld\n", (long)base);
+            g_forceRender = true;
+        } else if (ch == 'A') {
+            // 调试：按当前时刻回推一段活动轨迹，用于核对时间轴外环
+            bucketClear();
+            const int c = bucketNow();
+            struct { int a, b; uint8_t lv; } sg[] = {
+                {-180, -150, 1}, {-150, -120, 2}, {-120, -95, 1},
+                {-80,  -62,  1}, {-62,  -40,  2}, {-40,  -12, 1},
+            };
+            uint32_t walk = 0, run = 0;
+            for (auto &s : sg) {
+                const int a = c + s.a, b2 = c + s.b;
+                for (int m = (a < 0 ? 0 : a); m < b2 && m < BKT_N; ++m)
+                    bktPut(g_bkt.lvl, m, s.lv);
+                if (s.lv == 1) walk += (uint32_t)(b2 - a) * 60;
+                else           run  += (uint32_t)(b2 - a) * 60;
+            }
+            g_steps     = walk + run;
+            g_runSteps  = run;
+            g_activeSec = (walk + run) / 100;
+            saveToday(true);
+            Serial.printf("[A] timeline seeded cur=%d steps=%u run=%u\n",
+                          c, (unsigned)g_steps, (unsigned)g_runSteps);
+            g_forceRender = true;
         } else if (ch == 'k') {
             Serial.printf("[k] mem goal=%u h=%u w=%u br=%u snd=%u off=%u slp=%u dirty=%d\n",
                           (unsigned)g_cfg.goal, (unsigned)g_cfg.heightCm,

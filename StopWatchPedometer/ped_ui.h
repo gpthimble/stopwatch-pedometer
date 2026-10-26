@@ -92,13 +92,14 @@ static void uiPage()
 // 星期：Sakamoto 算法，不依赖 RTC 的 weekDay 字段
 static const char *weekdayName(int y, int m, int d)
 {
-    static const char *n[7] = {"周日", "周一", "周二", "周三",
-                               "周四", "周五", "周六"};
+    static const char *zh[7] = {"周日", "周一", "周二", "周三",
+                                "周四", "周五", "周六"};
+    static const char *en[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
     static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
     if (m < 3) y -= 1;
     int w = (y + y / 4 - y / 100 + y / 400 + t[(m - 1) % 12] + d) % 7;
     if (w < 0) w += 7;
-    return n[w];
+    return g_cfg.lang ? en[w] : zh[w];
 }
 
 // 页面：主页 / 历史 / 设置入口参与左右翻页。
@@ -169,6 +170,7 @@ static int pedTextWidth(const char *s, const PedFont &f)
 static void pedDrawText(int x, int y, const char *s, const PedFont &f,
                         uint16_t col, int align)
 {
+    s = trText(s);                  // 中文原文 → 当前语言
     const int w = pedTextWidth(s, f);
     int pen = (align == 1) ? (x - w / 2) : (align == 2 ? x - w : x);
     const int base = y + (f.ascent - f.descent) / 2;
@@ -504,11 +506,14 @@ static void drawMain()
     // 日期 + 星期
     if (hasRtc) {
         auto dt = M5.Rtc.getDateTime();
-        snprintf(buf, sizeof(buf), "%d月%d日 %s",
-                 dt.date.month, dt.date.date,
-                 weekdayName(dt.date.year, dt.date.month, dt.date.date));
+        if (g_cfg.lang) snprintf(buf, sizeof(buf), "%d/%d %s",
+                                 dt.date.month, dt.date.date,
+                                 weekdayName(dt.date.year, dt.date.month, dt.date.date));
+        else            snprintf(buf, sizeof(buf), "%d月%d日 %s",
+                                 dt.date.month, dt.date.date,
+                                 weekdayName(dt.date.year, dt.date.month, dt.date.date));
     } else {
-        snprintf(buf, sizeof(buf), "--月--日");
+        snprintf(buf, sizeof(buf), T("--月--日", "--/--"));
     }
     textC(g_cx, g_cy - 106, buf, F_L, C_DIM);
 
@@ -516,15 +521,16 @@ static void drawMain()
     snprintf(buf, sizeof(buf), "%u", (unsigned)g_steps);
     textC(g_cx, g_cy - 4, buf, F_HUGE, C_TEXT);
 
-    snprintf(buf, sizeof(buf), "%d%% · 目标 %u",
+    snprintf(buf, sizeof(buf), T("%d%% · 目标 %u", "%d%% · goal %u"),
              (int)(prog * 100.0f + 0.5f), (unsigned)g_cfg.goal);
     textC(g_cx, g_cy + 94, buf, F_S, C_ACCENT);
 
     if (g_vbat > 0 && g_vbat < 3450) {
-        snprintf(buf, sizeof(buf), "电量低 %d%% 请充电", g_battery);
+        snprintf(buf, sizeof(buf), T("电量低 %d%% 请充电", "Low battery %d%%, charge now"), g_battery);
         textC(g_cx, g_cy + 136, buf, F_S, C_WARN);
     } else {
-        snprintf(buf, sizeof(buf), "%.2f 公里 · %d 千卡", kmOf(g_steps), kcalOf(g_steps));
+        snprintf(buf, sizeof(buf), T("%.2f 公里 · %d 千卡", "%.2f km · %d kcal"),
+                 kmOf(g_steps), kcalOf(g_steps));
         textC(g_cx, g_cy + 136, buf, F_S, C_DIM);
     }
 
@@ -545,13 +551,13 @@ static void drawStats()
     for (int i = 0; i < 5; ++i) {
         if (i) ui->drawFastHLine(70, y - 30, g_w - 140, C_TRACK);
         switch (i) {
-            case 0: snprintf(v, sizeof(v), "%.2f 公里", kmOf(g_steps)); break;
-            case 1: snprintf(v, sizeof(v), "%d 千卡", kcalOf(g_steps)); break;
+            case 0: snprintf(v, sizeof(v), T("%.2f 公里", "%.2f km"), kmOf(g_steps)); break;
+            case 1: snprintf(v, sizeof(v), T("%d 千卡", "%d kcal"), kcalOf(g_steps)); break;
             case 2: snprintf(v, sizeof(v), "%u:%02u:%02u",
                              (unsigned)(g_activeSec / 3600),
                              (unsigned)((g_activeSec / 60) % 60),
                              (unsigned)(g_activeSec % 60)); break;
-            case 3: snprintf(v, sizeof(v), "%u 步/分", (unsigned)g_cadence); break;
+            case 3: snprintf(v, sizeof(v), T("%u 步/分", "%u spm"), (unsigned)g_cadence); break;
             default: snprintf(v, sizeof(v), "%d%%",
                              g_cfg.goal ? (int)(100.0f * g_steps / g_cfg.goal) : 0); break;
         }
@@ -560,7 +566,7 @@ static void drawStats()
         y += 62;
     }
 
-    if (g_battery >= 0) snprintf(v, sizeof(v), "电量 %d%%", g_battery);
+    if (g_battery >= 0) snprintf(v, sizeof(v), T("电量 %d%%", "Battery %d%%"), g_battery);
     else                snprintf(v, sizeof(v), "USB 供电");
     textC(g_cx, 430, v, F_L, C_DIM);
 }
@@ -568,16 +574,44 @@ static void drawStats()
 // ------------------------------------------------------------
 // 设置入口
 // ------------------------------------------------------------
+// 齿轮：8 个齿，齿顶与齿根按角度切换，中心留孔，边缘按覆盖率混合
+static void drawGear(int ccx, int ccy, uint16_t col)
+{
+    const float R0   = 60.0f;                  // 齿根
+    const float R1   = 94.0f;                  // 齿顶
+    const float RH   = 32.0f;                  // 中心孔
+    const float step = 6.28318531f / 8.0f;     // 每齿 45°
+    const float half = 0.19f;                  // 齿的半角
+
+    const int r1 = (int)R1 + 2;
+    for (int y = ccy - r1; y <= ccy + r1; ++y) {
+        if (y < g_bandY0 || y >= g_bandY1) continue;
+        const float dy = (float)y + 0.5f - (float)ccy;
+        for (int x = ccx - r1; x <= ccx + r1; ++x) {
+            if (x < 0 || x >= g_w) continue;
+            const float dx = (float)x + 0.5f - (float)ccx;
+            const float r  = sqrtf(dx * dx + dy * dy);
+            if (r > R1 + 1.0f) continue;
+
+            float d = fmodf(cwAtan2(dy, dx) + step * 0.5f, step);
+            if (d < 0.0f) d += step;
+            d -= step * 0.5f;                            // 到最近齿中心的角距
+            const float rEdge = (fabsf(d) < half) ? R1 : R0;
+
+            float cov = fminf(0.5f + (rEdge - r), 0.5f + (r - RH));
+            if (cov <= 0.0f) continue;
+            if (cov > 1.0f) cov = 1.0f;
+            ui->writePixel(x, y, shade565(col, (uint32_t)(cov * 255.0f + 0.5f)));
+        }
+    }
+}
+
 // 设置不与其它页面同级翻页，单独一页作入口，点按后才进入列表
 static void drawDoor()
 {
-    const float rOut = (float)g_cx - 2.0f;
-    const float rIn  = rOut - 22.0f;
-    drawRingAA(rOut, rIn, -90.0f, 360.0f, C_TRACK, C_BTN);
-
-    textC(g_cx, g_cy - 34, "设置", F_MID, C_TEXT);
-    textC(g_cx, g_cy + 34, "点按进入", F_S, C_DIM);
-    textC(g_cx, 414, "左右切页 · 点按进入", F_S, C_DIM);
+    drawGear(g_cx, 204, themeColor());
+    textC(g_cx, 352, "设置", F_H1, C_TEXT);
+    textC(g_cx, 390, "点按进入", F_S, C_DIM);
 }
 
 // ------------------------------------------------------------
@@ -670,7 +704,7 @@ static void drawHist()
         textC(bx + bw / 2, yb + 22, v, F_S, isToday ? C_TEXT : C_DIM);
     }
 
-    snprintf(v, sizeof(v), "日均 %u 步", (unsigned)(cnt ? sum / cnt : 0));
+    snprintf(v, sizeof(v), T("日均 %u 步", "Avg %u steps"), (unsigned)(cnt ? sum / cnt : 0));
     textC(g_cx, 408, v, F_H1, C_ACCENT);
 }
 
@@ -727,16 +761,17 @@ static void drawHistDay(int idx)
     }
 
     // 顶部：第几天，日期与星期
-    snprintf(b, sizeof(b), "%s · %d/%d", idx == 0 ? "今天" : "历史",
+    snprintf(b, sizeof(b), "%s · %d/%d", T("今天", "Today"),
              idx + 1, HIST_DAYS);
     textC(g_cx, g_cy - 168, b, F_S, C_DIM);
 
+    const int dm2 = (int)((dayK / 100) % 100), dd2 = (int)(dayK % 100);
+    const char *wk2 = weekdayName((int)(dayK / 10000), dm2, dd2);
     if (dayK > 0) {
-        snprintf(b, sizeof(b), "%d月%d日 %s",
-                 (int)((dayK / 100) % 100), (int)(dayK % 100),
-                 weekdayName((int)(dayK / 10000), (int)((dayK / 100) % 100), (int)(dayK % 100)));
+        if (g_cfg.lang) snprintf(b, sizeof(b), "%d/%d %s", dm2, dd2, wk2);
+        else            snprintf(b, sizeof(b), "%d月%d日 %s", dm2, dd2, wk2);
     } else {
-        snprintf(b, sizeof(b), "--月--日");
+        snprintf(b, sizeof(b), T("--月--日", "--/--"));
     }
     textC(g_cx, g_cy - 128, b, F_L, C_TEXT);
 
@@ -750,15 +785,16 @@ static void drawHistDay(int idx)
     snprintf(b, sizeof(b), "%u", (unsigned)r.steps);
     textC(g_cx, g_cy - 4, b, F_HUGE, C_TEXT);
 
-    snprintf(b, sizeof(b), "%d%% · 目标 %u",
+    snprintf(b, sizeof(b), T("%d%% · 目标 %u", "%d%% · goal %u"),
              (int)(prog * 100.0f + 0.5f), (unsigned)g_cfg.goal);
     textC(g_cx, g_cy + 94, b, F_S, C_ACCENT);
 
-    snprintf(b, sizeof(b), "%.2f 公里 · %d 千卡", kmOf(r.steps), kcalOf(r.steps));
+    snprintf(b, sizeof(b), T("%.2f 公里 · %d 千卡", "%.2f km · %d kcal"),
+             kmOf(r.steps), kcalOf(r.steps));
     textC(g_cx, g_cy + 132, b, F_S, C_DIM);
 
     if (r.run) {
-        snprintf(b, sizeof(b), "跑步 %u 步 · 占 %d%%",
+        snprintf(b, sizeof(b), T("跑步 %u 步 · 占 %d%%", "Run %u · %d%%"),
                  (unsigned)r.run, (int)(100.0f * (float)r.run / (float)r.steps + 0.5f));
         textC(g_cx, g_cy + 166, b, F_S, C_RUN);
     } else {
@@ -783,14 +819,26 @@ static float g_wStartPx = 0.0f;
 static bool  g_wMoved   = false;
 static float g_listPx   = 0.0f;   // 设置列表滚动位置（像素）
 
-#define SET_ROW_TIME  7
-#define SET_ROW_COLOR 8
+#define SET_ROW_TIME  7           // 「对时」行，点按进入子页
+#define SET_ROW_COLOR 8           // 「配色」行，点按进入色轮
+#define SET_ROW_LANG  9           // 「语言」行，点按或左右按钮切换
 
-#define LIST_VP0  94              // 设置列表可视区（圆屏，纵向要收紧）
-#define LIST_VP1  372
-#define ROW_Y0    124
-#define ROW_H     56
+// 入口型行（有右箭头）与数值行（有 − / +）的区分
+static bool rowIsLink(int i) { return i == SET_ROW_TIME || i == SET_ROW_COLOR; }
+
+#define LIST_VP0  96              // 设置列表可视区（圆屏，纵向要收紧）
+#define LIST_VP1  366             // 96..366 正好容纳 5 行 54 px，第 5 行不被裁切
+#define ROW_Y0    123             // 第 1 行中心
+#define ROW_H     54
 #define ROW_PAGE  5
+
+#define ROW_NAME_X 52             // 名称左端
+#define PILL_X0   208             // 胶囊左端
+#define PILL_X1   432             // 胶囊右端
+#define PILL_H    40
+#define GLY_MINUS 236             // 减号中心
+#define GLY_PLUS  404             // 加号中心
+#define VAL_CX    320             // 数值中心
 
 #define WH_CY     276             // 日期轮中心
 #define WH_H      56              // 每个槽位高
@@ -816,25 +864,32 @@ static void timeLoad()
     g_tH  = dt.time.hours; g_tMi = dt.time.minutes;
 }
 
-static int rowCount() { return 9; }
+static int rowCount() { return 10; }
+
+// 面板亮度内部是 40..255，界面按百分比显示与调节
+static int brightPct()
+{
+    return (int)(((unsigned)g_cfg.bright * 100u + 127u) / 255u);
+}
 
 static const char *rowName(int i)
 {
     static const char *setName[] = {"每日目标", "身高", "体重", "亮度",
-                                    "提示", "息屏", "深睡", "对时", "配色"};
-    return setName[i % 9];
+                                    "提示", "息屏", "深睡", "对时", "配色", "语言"};
+    return setName[i % 10];
 }
 
 static void rowValue(int i, char *b, size_t n)
 {
     switch (i) {
-        case 0: snprintf(b, n, "%u 步", (unsigned)g_cfg.goal); break;
+        case 0: snprintf(b, n, T("%u 步", "%u steps"), (unsigned)g_cfg.goal); break;
         case 1: snprintf(b, n, "%u cm", g_cfg.heightCm); break;
         case 2: snprintf(b, n, "%u kg", g_cfg.weightKg); break;
-        case 3: snprintf(b, n, "%u", g_cfg.bright); break;
+        case 3: snprintf(b, n, "%u%%", (unsigned)brightPct()); break;
         case 4: snprintf(b, n, "%s", g_cfg.sound == 0 ? "静音" : (g_cfg.sound == 1 ? "震动" : "震动+声音")); break;
         case 5: snprintf(b, n, "%u s", g_cfg.screenOffS); break;
         case 6: snprintf(b, n, "%u s", g_cfg.sleepAfterS); break;
+        case 9: snprintf(b, n, "%s", g_cfg.lang ? "English" : "简体中文"); break;
         default: snprintf(b, n, "%s", ""); break;
     }
 }
@@ -925,9 +980,10 @@ static void rowAdjust(int i, int dir)
             g_cfg.weightKg = (uint16_t)v;
         } break;
         case 3: {
-            int v = (int)g_cfg.bright + dir * 15;
-            if (v < 40) v = 40;
-            if (v > 255) v = 255;
+            int pct = brightPct() + dir * 5;       // 界面按 5% 一档
+            if (pct < 16)  pct = 16;
+            if (pct > 100) pct = 100;
+            const int v = (pct * 255 + 50) / 100;
             g_cfg.bright = (uint8_t)v;
             M5.Display.setBrightness(g_cfg.bright);
             g_bright = g_cfg.bright;
@@ -952,6 +1008,10 @@ static void rowAdjust(int i, int dir)
             if (v > 240) v = 240;
             g_cfg.sleepAfterS = (uint8_t)v;
         } break;
+        case 9:
+            g_cfg.lang = g_cfg.lang ? 0 : 1;   // 两种语言直接切换
+            g_forceRender = true;              // 整屏文案都变了
+            break;
         default: break;
     }
     cfgTouch();             // 改完标记待落盘（静置 700 ms 后写 NVS）
@@ -998,18 +1058,42 @@ static void thickLine(int x0, int y0, int x1, int y1, float w, uint16_t col)
     }
 }
 
-// 行渲染：名称 + 数值 + 左右两个圆形按钮
+// 行：左侧名称，右侧一枚圆角胶囊，胶囊内是「− 数值 +」
+// 胶囊宽度固定，减号与加号贴两端，数值居中；数值过长时自动降一级字模
+static void drawPill(int y, uint16_t col)
+{
+    fillRoundRectAA((float)PILL_X0, (float)(y - PILL_H / 2),
+                    (float)(PILL_X1 - PILL_X0), (float)PILL_H,
+                    (float)(PILL_H / 2), col);
+}
+
+static void glyphMinus(int x, int y, uint16_t col)
+{
+    ui->fillRect(x - 10, y - 2, 21, 5, col);
+}
+
+static void glyphPlus(int x, int y, uint16_t col)
+{
+    ui->fillRect(x - 10, y - 2, 21, 5, col);
+    ui->fillRect(x - 2, y - 10, 5, 21, col);
+}
+
+static void drawPillValue(int x, int y, const char *val, uint16_t col)
+{
+    const int room = GLY_PLUS - GLY_MINUS - 34;
+    const PedFont *f = &F_H1;
+    if (pedTextWidth(val, *f) > room) f = &F_L;
+    if (pedTextWidth(val, *f) > room) f = &F_S;
+    textC(x, y, val, *f, col);
+}
+
 static void drawRowAt(int y, const char *name, const char *val)
 {
-    textL(40, y, name, F_L, C_TEXT);
-    textR(296, y, val, F_H1, C_TEXT);
-
-    fillCircleAA(340, y, 23, C_BTN);
-    ui->fillRect(329, y - 2, 22, 5, C_TEXT);
-
-    fillCircleAA(392, y, 23, C_BTN);
-    ui->fillRect(381, y - 2, 22, 5, C_TEXT);
-    ui->fillRect(389, y - 12, 5, 22, C_TEXT);
+    textL(ROW_NAME_X, y, name, F_L, C_TEXT);
+    drawPill(y, C_BTN);
+    glyphMinus(GLY_MINUS, y, C_DIM);
+    drawPillValue(VAL_CX, y, val, C_TEXT);
+    glyphPlus(GLY_PLUS, y, C_TEXT);
 }
 
 static void drawRow(int i, int y)
@@ -1019,7 +1103,7 @@ static void drawRow(int i, int y)
     drawRowAt(y, rowName(i), v);
 }
 
-// 「对时」行：数值显示当前 RTC 时间，右侧是进入箭头
+// 「对时」行：胶囊内显示当前 RTC 时间，右端是进入箭头
 static void drawRowLink(int y)
 {
     char v[24];
@@ -1029,18 +1113,28 @@ static void drawRowLink(int y)
     } else {
         snprintf(v, sizeof(v), "--:--");
     }
-    textL(40, y, rowName(SET_ROW_TIME), F_L, C_TEXT);
-    textR(340, y, v, F_H1, C_ACCENT);
-    chevronAt(394, y, 1, C_DIM);
+    textL(ROW_NAME_X, y, rowName(SET_ROW_TIME), F_L, C_TEXT);
+    drawPill(y, C_BTN);
+    drawPillValue(VAL_CX, y, v, C_ACCENT);
+    chevronAt(GLY_PLUS, y, 1, C_DIM);
 }
 
-// 「配色」行：右侧是主题色与强调色两个色点
+// 「配色」行：胶囊内是主题色与强调色两个色点，右端是进入箭头
 static void drawRowColor(int y)
 {
-    textL(40, y, rowName(SET_ROW_COLOR), F_L, C_TEXT);
-    fillCircleAA(332, y, 15, themeColor());
-    fillCircleAA(372, y, 15, runColor());
-    chevronAt(414, y, 1, C_DIM);
+    textL(ROW_NAME_X, y, rowName(SET_ROW_COLOR), F_L, C_TEXT);
+    drawPill(y, C_BTN);
+    fillCircleAA(288.0f, (float)y, 13.0f, themeColor());
+    fillCircleAA(332.0f, (float)y, 13.0f, runColor());
+    chevronAt(GLY_PLUS, y, 1, C_DIM);
+}
+
+// 「语言」行：只有当前语言名，胶囊内点按即切换
+static void drawRowLang(int y)
+{
+    textL(ROW_NAME_X, y, rowName(SET_ROW_LANG), F_L, C_TEXT);
+    drawPill(y, C_BTN);
+    drawPillValue(VAL_CX, y, g_cfg.lang ? "English" : "简体中文", C_ACCENT);
 }
 
 static void clearToday()
@@ -1072,30 +1166,30 @@ static void drawSet()
     for (int i = i0; i <= i0 + ROW_PAGE + 2; ++i) {
         if (i < 0 || i >= rowCount()) continue;
         const int y = ROW_Y0 + (int)lroundf((float)(i * ROW_H) - g_listPx);
-        if (i > 0) ui->drawFastHLine(40, y - ROW_H / 2, g_w - 80, C_TRACK);
         if (i == SET_ROW_TIME)       drawRowLink(y);
         else if (i == SET_ROW_COLOR) drawRowColor(y);
+        else if (i == SET_ROW_LANG)  drawRowLang(y);
         else                         drawRow(i, y);
     }
     // 视口外的部分只清与条带的交集：条带渲染时带外清了也不会被推出去，纯浪费
     bgRect(0, LIST_VP0);
     bgRect(LIST_VP1, g_h);
 
-    textC(g_cx, 56, "设置", F_H1, C_TEXT);
+    textC(g_cx, 66, "设置", F_H1, C_TEXT);
 
     const int pages = rowCount() - ROW_PAGE + 1;
     int cur = (int)lroundf(g_listPx / (float)ROW_H) + 1;
     if (cur < 1) cur = 1;
     if (cur > pages) cur = pages;
     snprintf(v, sizeof(v), "%d/%d", cur, pages);
-    textR(374, 56, v, F_SM, C_DIM);
+    textR(384, 66, v, F_SM, C_DIM);
 
-    textC(g_cx, 414, "上下拖动 · 左右切页", F_S, C_DIM);
+    textC(g_cx, 404, "上下拖动 · 左右切页", F_S, C_DIM);
 
     // 横向滑动的切页进度：从中心向两侧张开，滑够 40 px 就切页
     if (g_slideHint > 0.02f) {
         const int w = (int)(g_slideHint * 70.0f);
-        if (w >= 2) ui->fillRoundRect(g_cx - w, 392, w * 2, 5, 2, C_ACCENT);
+        if (w >= 2) ui->fillRoundRect(g_cx - w, 384, w * 2, 5, 2, C_ACCENT);
     }
 }
 
@@ -1191,8 +1285,8 @@ static void drawDial()
     else          snprintf(v, sizeof(v), "%02d", g_tMi);
     textC(g_cx, g_cy - 2, v, F_BIG, C_TEXT);
 
-    if (hourMode) snprintf(v, sizeof(v), "分 %02d", g_tMi);
-    else          snprintf(v, sizeof(v), "时 %02d", g_tH);
+    if (hourMode) snprintf(v, sizeof(v), T("分 %02d", "Min %02d"), g_tMi);
+    else          snprintf(v, sizeof(v), T("时 %02d", "Hour %02d"), g_tH);
     textC(g_cx, g_cy + 76, v, F_H1, C_DIM);
     textC(g_cx, g_cy + 110, "点按确认", F_S, shade565(C_DIM, 120));
 }
@@ -1345,7 +1439,8 @@ static void drawColorWheel()
     textC(g_cx, g_cy, v, F_S, (g_colVal >= 62) ? C_BG : C_TEXT);
 
     textC(g_cx, g_cy - 84, (g_colTarget == 0) ? "主题色" : "强调色", F_S, C_DIM);
-    snprintf(v, sizeof(v), "色相 %d° · 亮度 %d%%", (int)lroundf(hw), g_colVal);
+    snprintf(v, sizeof(v), T("色相 %d° · 亮度 %d%%", "Hue %d° · Bright %d%%"),
+             (int)lroundf(hw), g_colVal);
     textC(g_cx, g_cy + 84, v, F_S, C_DIM);
 
     textC(g_cx, 414, "环上选色相 · 圆内调亮度", F_S, C_DIM);
@@ -1363,9 +1458,11 @@ static void drawDebugHw()
     textC(g_cx, 124, v, F_NUM, C_TEXT);
 
     // 步态取自 page0 字节 4（0 静止 / 1 步行 / 2 跑步 / 3 未知）
-    static const char *actName[] = {"静止", "步行", "跑步", "未知"};
-    snprintf(v, sizeof(v), "步态 %s · 本次硬件 %u 步",
-             actName[g_actCode & 3], (unsigned)g_hwSteps);
+    static const char *actZh[] = {"静止", "步行", "跑步", "未知"};
+    static const char *actEn[] = {"still", "walk", "run", "unknown"};
+    const uint8_t ac = g_actCode & 3;
+    snprintf(v, sizeof(v), T("步态 %s · 本次硬件 %u 步", "Gait %s · hw %u steps"),
+             g_cfg.lang ? actEn[ac] : actZh[ac], (unsigned)g_hwSteps);
     textC(g_cx, 186, v, F_S, C_DIM);
 
     // 使能字节随配置包变：legacy(手机) 在 page4 字节 1，base(腕戴) 在 page6 字节 3
@@ -1378,10 +1475,10 @@ static void drawDebugHw()
           (pedimu::dbgVerify & 1) ? C_DIM : C_WARN);
 
     if (phone) {
-        snprintf(v, sizeof(v), "配置 LEGACY（手机）");
+        snprintf(v, sizeof(v), T("配置 LEGACY（手机）", "Config LEGACY (phone)"));
         textC(g_cx, 254, v, F_SM, C_DIM);
     } else {
-        snprintf(v, sizeof(v), "参数 %04X", pedimu::dbgParam);
+        snprintf(v, sizeof(v), T("参数 %04X", "Param %04X"), pedimu::dbgParam);
         textC(g_cx, 254, v, F_SM,
               (pedimu::dbgVerify & 2) ? C_DIM : C_WARN);
     }
@@ -1403,7 +1500,8 @@ static void drawDebugHw()
              pedimu::dbgAccConf, pedimu::dbgPwrCtrl, pedimu::dbgPwrConf);
     textC(g_cx, 352, v, F_SM, C_DIM);
 
-    snprintf(v, sizeof(v), "唤醒 %u · 电池 %u mV", (unsigned)g_rtc.wakes, (unsigned)g_vbat);
+    snprintf(v, sizeof(v), T("唤醒 %u · 电池 %u mV", "Wakes %u · %u mV"),
+                 (unsigned)g_rtc.wakes, (unsigned)g_vbat);
     textC(g_cx, 384, v, F_S, C_DIM);
 
     textC(g_cx, 428, "数值全部来自芯片回读", F_S, C_DIM);
@@ -1553,9 +1651,9 @@ static void listSnap()
     }
     g_listPx = target;
     uiSettle();
-    // 分页指示「N/M」画在 y=56，在列表视口外 —— 条带补间带不到它。
+    // 分页指示「N/M」画在 y=66，在列表视口外 —— 条带补间带不到它。
     // 吸附后行号必然变化，单独补一条窄带刷新。
-    uiRenderBand(44, 70);
+    uiRenderBand(44, 88);
 }
 
 // ------------------------------------------------------------
@@ -1568,6 +1666,7 @@ static int      g_listStartY  = 0;
 static float    g_listStartPx = 0.0f;
 static int      g_pressRow    = -1;      // 按下瞬间锁定的设置行（避免吸附后错位）
 static int      g_pressBtn    = 0;       // 按下的按钮：-1 减 / +1 加 / 0 不是按钮
+static uint32_t g_btnNextMs   = 0;       // 按住连发的下次触发时刻
 static int      g_listStartX  = 0;
 static int      g_dirLock     = 0;       // 0=未定 1=横向切页 2=纵向滚动
 static bool     g_colorDrag   = false;   // 色轮拖动中
@@ -1823,8 +1922,11 @@ static bool uiTap(int x, int y)
 
         if (i == SET_ROW_TIME) { enterTimePage(); return true; }
         if (i == SET_ROW_COLOR) { enterColorPage(); return true; }
-        if (x > 296 && x < 366) { rowAdjust(i, -1); uiTick(); return true; }
-        if (x >= 366 && x < 432) { rowAdjust(i, +1); uiTick(); return true; }
+        // 胶囊内任意位置都算按钮：左半减、右半加，按钮的分界与画面一致
+        if (x >= PILL_X0 && x <= PILL_X1) {
+            rowAdjust(i, (x < VAL_CX) ? -1 : +1);
+            uiTick();
+        }
         return true;
     }
 }
@@ -1852,9 +1954,11 @@ static bool uiTouch(uint32_t now)
                 const float cy = (float)ROW_Y0 + (float)(i * ROW_H) - g_listPx;
                 if (fabsf((float)t.y - cy) <= (float)ROW_H * 0.5f) {
                     g_pressRow = i;
-                    // − / + 热区：整行右段，左右各 66 px，比视觉按钮宽一倍
-                    // 只有数值行（0..6）有按钮，对时/配色/清零不走这条路
-                    if (i <= 6 && t.x > 296 && t.x < 432) g_pressBtn = (t.x < 366) ? -1 : 1;
+                    // 胶囊左右各半：左半减、右半加，与画面上的 − / + 位置一致
+                    if (!rowIsLink(i) && t.x >= PILL_X0 && t.x <= PILL_X1) {
+                        g_pressBtn  = (t.x < VAL_CX) ? -1 : 1;
+                        g_btnNextMs = now + 500;      // 按住 500 ms 后开始连发
+                    }
                 }
             }
 
@@ -1914,6 +2018,21 @@ static bool uiTouch(uint32_t now)
     }
 
     if (pressed) {
+        // 按住 − / + 不放：500 ms 后开始连发，每 140 ms 走一档
+        if (g_pressBtn != 0 && g_pressRow >= 0 && !rowIsLink(g_pressRow) &&
+            g_pressRow != SET_ROW_LANG) {
+            const int adx = (t.x > g_listStartX) ? t.x - g_listStartX : g_listStartX - t.x;
+            const int ady = (t.y > g_listStartY) ? t.y - g_listStartY : g_listStartY - t.y;
+            if (adx < 10 && ady < 10) {
+                if ((int32_t)(now - g_btnNextMs) >= 0) {
+                    rowAdjust(g_pressRow, g_pressBtn);
+                    uiTick();
+                    g_btnNextMs = now + 140;
+                    return true;
+                }
+                return false;
+            }
+        }
         if (g_wCol >= 0) {
             const int dy = g_wStartY - t.y;          // 手指往上 → 数值变大
             if (!g_wMoved) {
@@ -2044,7 +2163,7 @@ static bool uiTouch(uint32_t now)
                               t.x, t.y, g_pressRow, g_pressBtn, dx, dy);
                 g_slideHint = 0.0f;
                 listSnap();
-                if (g_pressBtn != 0 && g_pressRow >= 0 && g_pressRow <= 6) {
+                if (g_pressBtn != 0 && g_pressRow >= 0 && !rowIsLink(g_pressRow)) {
                     rowAdjust(g_pressRow, g_pressBtn);
                     uiTick();
                     return true;

@@ -69,7 +69,12 @@ struct Settings
     uint16_t runHue      = 12;     // 强调色色相 0..359（跑步段）
     uint8_t  themeVal    = 92;     // 主题色亮度 30..100（%）
     uint8_t  runVal      = 100;    // 强调色亮度 30..100（%）
+    uint8_t  lang        = 0;      // 0 简体中文 / 1 English
 };
+
+// 界面语言：静态文案走这张表，pedDrawText 里按当前语言替换；
+// 带数字的串在调用处用 T(中文, 英文) 分别拼。
+struct LangStr { const char *zh; const char *en; };
 
 // 每日历史
 struct DayRec
@@ -106,6 +111,85 @@ Preferences g_prefs;
 
 Settings g_cfg;
 DayRec   g_hist[HIST_DAYS];
+
+// ------------------------------------------------------------
+// 界面语言
+// 静态文案统一登记在这里，绘制时按当前设置整串替换；
+// 含数字的串在调用处用 T(中文, 英文) 分别拼装。
+// ------------------------------------------------------------
+#define T(zh, en) (g_cfg.lang ? (en) : (zh))
+
+static const LangStr kLangTab[] = {
+    // 页面与标题
+    {"今日数据",   "Today"},
+    {"历史",       "History"},
+    {"近 7 天",    "Last 7 days"},
+    {"设置",       "Settings"},
+    {"对时",       "Set time"},
+    {"配色",       "Colors"},
+    {"语言",       "Language"},
+    // 主页与今日详情
+    {"距离",       "Distance"},
+    {"消耗",       "Energy"},
+    {"活跃",       "Active"},
+    {"步频",       "Cadence"},
+    {"完成",       "Goal"},
+    {"主题色",     "Theme"},
+    {"强调色",     "Accent"},
+    // 历史
+    {"今天",       "Today"},
+    {"无记录",     "No data"},
+    {"还没有记录", "No records yet"},
+    {"走几步就会出现在这里", "Walk a little to fill this in"},
+    {"这一天没有同步过成绩", "No record for this day"},
+    {"无跑步记录", "No runs"},
+    {"周一", "Mon"}, {"周二", "Tue"}, {"周三", "Wed"}, {"周四", "Thu"},
+    {"周五", "Fri"}, {"周六", "Sat"}, {"周日", "Sun"},
+    // 设置项
+    {"每日目标", "Daily goal"},
+    {"身高",     "Height"},
+    {"体重",     "Weight"},
+    {"亮度",     "Brightness"},
+    {"提示",     "Alerts"},
+    {"息屏",     "Screen off"},
+    {"深睡",     "Deep sleep"},
+    {"静音",     "Silent"},
+    {"震动",     "Vibrate"},
+    {"震动+声音", "Vib+sound"},
+    {"简体中文", "简体中文"},
+    {"English",  "English"},
+    {"点按进入", "Tap to open"},
+    {"上下拖动 · 左右切页", "Drag to scroll · swipe pages"},
+    // 对时
+    {"年", "Year"}, {"月", "Month"}, {"日", "Day"},
+    {"时", "Hour"}, {"分", "Minute"},
+    {"上下滑动 · 切换日期", "Swipe to change date"},
+    {"左滑下一步 · 右滑返回", "Swipe left next · right back"},
+    {"点按确认", "Tap to confirm"},
+    // 配色
+    {"环上选色相 · 圆内调亮度", "Ring: hue · center: brightness"},
+    // 其它
+    {"电量", "Battery"},
+    {"USB 供电", "USB power"},
+    {"上下滑动 · 查看每日", "Swipe for each day"},
+    // 诊断页
+    {"硬件计步", "Hardware step"},
+    {"静止", "Still"},
+    {"步行", "Walk"},
+    {"跑步", "Run"},
+    {"未知", "Unknown"},
+    {"数值全部来自芯片回读", "All values read back from chip"},
+};
+
+// 整串查表；没有登记的串（数字、单位、时间）原样返回
+static const char *trText(const char *s)
+{
+    if (g_cfg.lang == 0) return s;
+    for (const LangStr &e : kLangTab) {
+        if (strcmp(e.zh, s) == 0) return e.en;
+    }
+    return s;
+}
 
 uint32_t g_steps      = 0;   // 今日步数
 uint32_t g_runSteps   = 0;   // 今日其中判定为跑步的步数
@@ -290,6 +374,7 @@ static void cfgLoad()
     g_cfg.runHue      = g_prefs.getUShort("hue2",    g_cfg.runHue);
     g_cfg.themeVal    = g_prefs.getUChar ("val1",    g_cfg.themeVal);
     g_cfg.runVal      = g_prefs.getUChar ("val2",    g_cfg.runVal);
+    g_cfg.lang        = g_prefs.getUChar ("lang",    g_cfg.lang);
 
     // 容错
     if (g_cfg.goal < 500 || g_cfg.goal > 60000) g_cfg.goal = 8000;
@@ -303,6 +388,7 @@ static void cfgLoad()
     if (g_cfg.runHue >= 360) g_cfg.runHue = 12;
     if (g_cfg.themeVal < 30 || g_cfg.themeVal > 100) g_cfg.themeVal = 92;
     if (g_cfg.runVal   < 30 || g_cfg.runVal   > 100) g_cfg.runVal   = 100;
+    if (g_cfg.lang     > 1)  g_cfg.lang = 0;
 
     // 历史记录的字段在 v2.5 增加了跑步步数，旧键的长度对不上，读新键
     if (g_prefs.getBytesLength("hist2") == sizeof(g_hist)) {
@@ -323,6 +409,7 @@ static void cfgSave()
     g_prefs.putUShort("hue2",    g_cfg.runHue);
     g_prefs.putUChar ("val1",    g_cfg.themeVal);
     g_prefs.putUChar ("val2",    g_cfg.runVal);
+    g_prefs.putUChar ("lang",    g_cfg.lang);
 }
 
 // ------------------------------------------------------------

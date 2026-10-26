@@ -1,4 +1,4 @@
-# StopWatch 计步器 v2.9
+# StopWatch 计步器 v3.0
 
 固件发布包。功能说明与编译方法见仓库根目录的 [README](../README.md)。
 
@@ -6,16 +6,16 @@
 
 | 文件 | 大小 | 说明 |
 |---|---|---|
-| `StopWatch_Pedometer_v2.9.bin` | 1,434,160 B | 完整镜像（bootloader + 分区表 + app），写入 `0x0` |
-| `app_only.bin` | 1,368,624 B | 仅 app，写入 `0x10000`，用于已刷完整镜像的升级 |
+| `StopWatch_Pedometer_v3.0.bin` | 1,437,376 B | 完整镜像（bootloader + 分区表 + app），写入 `0x0` |
+| `app_only.bin` | 1,371,840 B | 仅 app，写入 `0x10000`，用于已刷完整镜像的升级 |
 | `flash.bat` | — | Windows 烧写脚本 |
 
 ```
-SHA256  StopWatch_Pedometer_v2.9.bin
-9D5C4E5F4EA66706C9FDAC1F1C7C870710CDB51076A31ACAB10A4B2475D6C408
+SHA256  StopWatch_Pedometer_v3.0.bin
+2DEDC2C6BDCFC3636695F45BD240EF97ABD729238F41AA7CDA1F9DE5D8A6CCF8
 
 SHA256  app_only.bin
-503AFC02F12FF4B72CA604C368030FB85927DE94E959B4AA3AAE74D63429D3BF
+7A1D84B9385D67E24D373E8F342C5330F722E30A89EF12BD3A72DD8BC513BAE1
 ```
 
 ## 刷入
@@ -38,7 +38,7 @@ SHA256  app_only.bin
 esptool --chip esp32s3 -p COM5 -b 460800 erase_flash
 esptool --chip esp32s3 -p COM5 -b 460800 write_flash \
         --flash_mode keep --flash_freq keep --flash_size keep \
-        0x0 StopWatch_Pedometer_v2.9.bin
+        0x0 StopWatch_Pedometer_v3.0.bin
 ```
 
 三个 `keep` 用于保留镜像 header 中的 flash 模式；省略时 header 被改写为 `qio`，ROM 停在 `mode:QIO` 之后反复复位。
