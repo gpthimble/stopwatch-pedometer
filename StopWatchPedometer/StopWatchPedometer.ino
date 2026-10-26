@@ -173,8 +173,10 @@ static void mergeRtcState()
     }
 
     int32_t today = todayKey();
-    if (today != 0 && g_rtc.dayKey != 0 && today != g_rtc.dayKey) {
+    if (today != 0 && g_rtc.dayKey != 0 && today > g_rtc.dayKey) {
         // 睡眠期间跨天：昨天的成绩入库，今日从 0 开始
+        Serial.printf("[day] rollover(sleep) %ld -> %ld steps=%u\n",
+                      (long)g_rtc.dayKey, (long)today, (unsigned)g_rtc.steps);
         histArchive(g_rtc.dayKey, g_rtc.steps, g_rtc.run);
         histSave();
         g_rtc.steps     = 0;
@@ -476,9 +478,8 @@ static void dbgPoll()
             // 判断"把像素缓冲搬到内部 RAM"值不值，就看「绘制」这一段有多大。
             auto drawPage = [](void) {
                 switch (g_page) {
-                    case PG_MAIN:  drawMain();  break;
-                    case PG_STATS: drawStats(); break;
-                    case PG_HIST:  drawHist();  break;
+                    case PG_MAIN:  if (g_mainDetail) drawStats(); else drawMain(); break;
+                    case PG_HIST:  if (g_histIdx < 0) drawHist(); else drawHistDay(g_histIdx); break;
                     case PG_SET:   drawSet();   break;
                     case PG_TIME:  drawTime();  break;
                     default:       drawDebugHw(); break;
@@ -582,9 +583,8 @@ static void dbgPoll()
             // 顺便量出 8bit 方案的 清屏/绘制/推送 耗时，判断值不值。
             auto drawPage = [](void) {
                 switch (g_page) {
-                    case PG_MAIN:  drawMain();  break;
-                    case PG_STATS: drawStats(); break;
-                    case PG_HIST:  drawHist();  break;
+                    case PG_MAIN:  if (g_mainDetail) drawStats(); else drawMain(); break;
+                    case PG_HIST:  if (g_histIdx < 0) drawHist(); else drawHistDay(g_histIdx); break;
                     case PG_SET:   drawSet();   break;
                     case PG_TIME:  drawTime();  break;
                     default:       drawDebugHw(); break;
@@ -960,12 +960,6 @@ void loop()
     dbgPoll();
     cfgService();          // 设置项静置 700 ms 后落盘
 
-    // 清零确认超时：提示收回到「点按清零」
-    if (g_clearArmMs != 0 && (int32_t)(now - g_clearArmMs) >= 0) {
-        g_clearArmMs  = 0;
-        g_forceRender = true;
-    }
-
     // 插着 USB 时每 3 s 打一行计数，方便观察是否在走
     static uint32_t lastDbgMs = 0;
     if (g_usbPower && now - lastDbgMs > 3000) {
@@ -1032,8 +1026,9 @@ void loop()
         // 黄键长按 1.2 s：回到主页
         if (M5.BtnA.pressedFor(1200) && !aLong) {
             aLong = true;
-            if (g_page != PG_MAIN) {
+            if (g_page != PG_MAIN || g_mainDetail || g_histIdx >= 0) {
                 g_page = PG_MAIN; g_setScroll = 0;
+                g_mainDetail = false; g_histIdx = -1;
                 redraw = true;
             }
             touchActivity(now);

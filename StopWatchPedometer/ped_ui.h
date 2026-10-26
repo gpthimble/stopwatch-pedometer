@@ -101,9 +101,14 @@ static const char *weekdayName(int y, int m, int d)
     return n[w];
 }
 
-// 页面（PG_TIME / PG_COLOR 不参与左右翻页，只能从设置进入；PG_DEBUG 仅串口可达）
-enum { PG_MAIN = 0, PG_STATS, PG_HIST, PG_SET, PG_TIME, PG_DEBUG, PG_COLOR };
-#define PG_CYCLE_MAX PG_SET
+// 页面：主页 / 历史 / 设置入口参与左右翻页。
+// 设置列表从入口点按进入，对时与配色再从列表进入；PG_DEBUG 仅串口可达。
+enum { PG_MAIN = 0, PG_HIST, PG_DOOR, PG_SET, PG_TIME, PG_COLOR, PG_DEBUG };
+#define PG_CYCLE_MAX PG_DOOR
+
+// 主页的子视图与历史的子视图都由上下滑动切换
+static bool g_mainDetail = false;   // 主页：今日详情
+static int  g_histIdx    = -1;      // 历史：-1 柱状图，0..6 七天
 
 // ------------------------------------------------------------
 // 抗锯齿基础：按覆盖率把颜色与黑色背景混合
@@ -561,6 +566,21 @@ static void drawStats()
 }
 
 // ------------------------------------------------------------
+// 设置入口
+// ------------------------------------------------------------
+// 设置不与其它页面同级翻页，单独一页作入口，点按后才进入列表
+static void drawDoor()
+{
+    const float rOut = (float)g_cx - 2.0f;
+    const float rIn  = rOut - 22.0f;
+    drawRingAA(rOut, rIn, -90.0f, 360.0f, C_TRACK, C_BTN);
+
+    textC(g_cx, g_cy - 34, "设置", F_MID, C_TEXT);
+    textC(g_cx, g_cy + 34, "点按进入", F_S, C_DIM);
+    textC(g_cx, 414, "左右切页 · 点按进入", F_S, C_DIM);
+}
+
+// ------------------------------------------------------------
 // 近 7 天
 // ------------------------------------------------------------
 // 20261024 → 自 2000-01-01 起的日数（用于按日期对齐柱子）
@@ -584,6 +604,7 @@ static void drawHist()
     char v[32];
     histSyncToday();                 // 今天的实时成绩也算一根柱子
     textC(g_cx, 78, "近 7 天", F_H1, C_TEXT);
+    textC(g_cx, 112, "上下滑动 · 查看每日", F_S, C_DIM);
 
     const int x0 = 70, x1 = g_w - 70;
     const int yb = 336, yt = 150;
@@ -653,6 +674,100 @@ static void drawHist()
     textC(g_cx, 408, v, F_H1, C_ACCENT);
 }
 
+static int daysInMonth(int y, int m);
+
+// 日期前后移动若干天（只接受 YYYYMMDD，最多跨几个月）
+static int32_t keyShift(int32_t key, int delta)
+{
+    if (key <= 0 || delta == 0) return key;
+    int y = (int)(key / 10000), m = (int)((key / 100) % 100), d = (int)(key % 100);
+    const int step = (delta > 0) ? 1 : -1;
+    for (int n = 0; n < (delta > 0 ? delta : -delta); ++n) {
+        const int dm = daysInMonth(y, m);
+        d += step;
+        if (d > dm) { d = 1; if (++m > 12) { m = 1; ++y; } }
+        if (d < 1)  { if (--m < 1) { m = 12; --y; } d = daysInMonth(y, m); }
+    }
+    return (int32_t)y * 10000 + m * 100 + d;
+}
+
+// 历史子视图：某一天的详情，版式与主页一致
+// idx = 0 今天，1 昨天，…… 6 为六天前
+static void drawHistDay(int idx)
+{
+    char b[56];
+    histSyncToday();
+
+    int32_t baseK = todayKey();
+    if (baseK == 0) baseK = g_dayKey;
+    if (idx < 0)    idx = 0;
+    if (idx >= HIST_DAYS) idx = HIST_DAYS - 1;
+    const int32_t dayK = keyShift(baseK, -idx);
+    const int32_t key  = keyToDays(dayK);
+
+    DayRec r = {0, 0, 0};
+    for (int j = 0; j < HIST_DAYS; ++j) {
+        if (key >= 0 && keyToDays(g_hist[j].day) == key) { r = g_hist[j]; break; }
+    }
+
+    const float prog = g_cfg.goal ? (float)r.steps / (float)g_cfg.goal : 0.0f;
+    const float p    = prog > 1.0f ? 1.0f : prog;
+
+    // 单环：当天目标完成度，环尾按跑步步数占比叠强调色
+    const float rOut = (float)g_cx - 2.0f;
+    const float rIn  = rOut - 22.0f;
+    drawRingAA(rOut, rIn, -90.0f, 360.0f * p, C_TRACK, C_ACCENT);
+    if (r.steps && r.run) {
+        float f = (float)r.run / (float)r.steps;
+        if (f > 1.0f) f = 1.0f;
+        const float span = 360.0f * p * f;
+        if (span > 0.8f) {
+            drawRingAA(rOut, rIn, -90.0f + 360.0f * p - span, span, C_TRACK, C_RUN, false);
+        }
+    }
+
+    // 顶部：第几天，日期与星期
+    snprintf(b, sizeof(b), "%s · %d/%d", idx == 0 ? "今天" : "历史",
+             idx + 1, HIST_DAYS);
+    textC(g_cx, g_cy - 168, b, F_S, C_DIM);
+
+    if (dayK > 0) {
+        snprintf(b, sizeof(b), "%d月%d日 %s",
+                 (int)((dayK / 100) % 100), (int)(dayK % 100),
+                 weekdayName((int)(dayK / 10000), (int)((dayK / 100) % 100), (int)(dayK % 100)));
+    } else {
+        snprintf(b, sizeof(b), "--月--日");
+    }
+    textC(g_cx, g_cy - 128, b, F_L, C_TEXT);
+
+    if (!r.day) {
+        textC(g_cx, g_cy - 10, "无记录", F_MID, C_DIM);
+        textC(g_cx, g_cy + 60, "这一天没有同步过成绩", F_S, shade565(C_DIM, 160));
+        textC(g_cx, 414, "上下滑动 · 切换日期", F_S, C_DIM);
+        return;
+    }
+
+    snprintf(b, sizeof(b), "%u", (unsigned)r.steps);
+    textC(g_cx, g_cy - 4, b, F_HUGE, C_TEXT);
+
+    snprintf(b, sizeof(b), "%d%% · 目标 %u",
+             (int)(prog * 100.0f + 0.5f), (unsigned)g_cfg.goal);
+    textC(g_cx, g_cy + 94, b, F_S, C_ACCENT);
+
+    snprintf(b, sizeof(b), "%.2f 公里 · %d 千卡", kmOf(r.steps), kcalOf(r.steps));
+    textC(g_cx, g_cy + 132, b, F_S, C_DIM);
+
+    if (r.run) {
+        snprintf(b, sizeof(b), "跑步 %u 步 · 占 %d%%",
+                 (unsigned)r.run, (int)(100.0f * (float)r.run / (float)r.steps + 0.5f));
+        textC(g_cx, g_cy + 166, b, F_S, C_RUN);
+    } else {
+        textC(g_cx, g_cy + 166, "无跑步记录", F_S, shade565(C_DIM, 160));
+    }
+
+    textC(g_cx, 414, "上下滑动 · 切换日期", F_S, C_DIM);
+}
+
 // ------------------------------------------------------------
 // 设置 / 对时
 // ------------------------------------------------------------
@@ -670,7 +785,6 @@ static float g_listPx   = 0.0f;   // 设置列表滚动位置（像素）
 
 #define SET_ROW_TIME  7
 #define SET_ROW_COLOR 8
-#define SET_ROW_CLEAR 9
 
 #define LIST_VP0  94              // 设置列表可视区（圆屏，纵向要收紧）
 #define LIST_VP1  372
@@ -702,13 +816,13 @@ static void timeLoad()
     g_tH  = dt.time.hours; g_tMi = dt.time.minutes;
 }
 
-static int rowCount() { return 10; }
+static int rowCount() { return 9; }
 
 static const char *rowName(int i)
 {
     static const char *setName[] = {"每日目标", "身高", "体重", "亮度",
-                                    "提示", "息屏", "深睡", "对时", "配色", "清零今日"};
-    return setName[i % 10];
+                                    "提示", "息屏", "深睡", "对时", "配色"};
+    return setName[i % 9];
 }
 
 static void rowValue(int i, char *b, size_t n)
@@ -929,9 +1043,6 @@ static void drawRowColor(int y)
     chevronAt(414, y, 1, C_DIM);
 }
 
-// 清零今日：要连按两次，中间 5 s 有效，避免误触
-static uint32_t g_clearArmMs = 0;
-
 static void clearToday()
 {
     g_steps     = 0;
@@ -949,21 +1060,7 @@ static void clearToday()
     saveToday(true);
     histSyncToday();
     histSave();
-    g_clearArmMs = 0;
     g_forceRender = true;
-}
-
-// 「清零今日」行：右侧是两段式确认提示
-static void drawRowClear(int y)
-{
-    const bool armed = (g_clearArmMs != 0) &&
-                       (int32_t)(millis() - g_clearArmMs) < 0;
-    textL(40, y, rowName(SET_ROW_CLEAR), F_L, armed ? C_WARN : C_TEXT);
-    if (armed) {
-        textR(392, y, "再点一次", F_S, C_WARN);
-    } else {
-        textR(392, y, "点按清零", F_S, C_DIM);
-    }
 }
 
 static void drawSet()
@@ -976,10 +1073,9 @@ static void drawSet()
         if (i < 0 || i >= rowCount()) continue;
         const int y = ROW_Y0 + (int)lroundf((float)(i * ROW_H) - g_listPx);
         if (i > 0) ui->drawFastHLine(40, y - ROW_H / 2, g_w - 80, C_TRACK);
-        if (i == SET_ROW_TIME) drawRowLink(y);
+        if (i == SET_ROW_TIME)       drawRowLink(y);
         else if (i == SET_ROW_COLOR) drawRowColor(y);
-        else if (i == SET_ROW_CLEAR) drawRowClear(y);
-        else                   drawRow(i, y);
+        else                         drawRow(i, y);
     }
     // 视口外的部分只清与条带的交集：条带渲染时带外清了也不会被推出去，纯浪费
     bgRect(0, LIST_VP0);
@@ -1343,9 +1439,9 @@ static void uiSlide(int dir)
 static void drawPage()
 {
     switch (g_page) {
-        case PG_MAIN:  drawMain();  break;
-        case PG_STATS: drawStats(); break;
-        case PG_HIST:  drawHist();  break;
+        case PG_MAIN:  if (g_mainDetail) drawStats(); else drawMain(); break;
+        case PG_HIST:  if (g_histIdx < 0) drawHist(); else drawHistDay(g_histIdx); break;
+        case PG_DOOR:  drawDoor();  break;
         case PG_SET:   drawSet();   break;
         case PG_TIME:  drawTime();  break;
         case PG_COLOR: drawColorWheel(); break;
@@ -1482,18 +1578,41 @@ static void pageNext()
 {
     if (g_page == PG_SET) cfgFlush();                     // 离开设置页即落盘
     uiPage();
-    if (g_page == PG_TIME || g_page == PG_COLOR) { g_page = PG_SET; return; }
-    g_page = (g_page + 1 > PG_CYCLE_MAX) ? PG_MAIN : g_page + 1;
+    // 对时 / 配色退回设置列表，设置列表退回入口页
+    if (g_page == PG_TIME || g_page == PG_COLOR) {
+        g_page = PG_SET;
+    } else if (g_page == PG_SET) {
+        g_page = PG_DOOR;
+    } else {
+        g_page = (g_page + 1 > PG_CYCLE_MAX) ? PG_MAIN : g_page + 1;
+    }
     g_setScroll = 0; g_listPx = 0.0f;
+    g_mainDetail = false; g_histIdx = -1;
 }
 
 static void pagePrev()
 {
     if (g_page == PG_SET) cfgFlush();
     uiPage();
-    if (g_page == PG_TIME || g_page == PG_COLOR) { g_page = PG_SET; return; }
-    g_page = (g_page == PG_MAIN) ? PG_CYCLE_MAX : g_page - 1;
+    if (g_page == PG_TIME || g_page == PG_COLOR) {
+        g_page = PG_SET;
+    } else if (g_page == PG_SET) {
+        g_page = PG_DOOR;
+    } else {
+        g_page = (g_page == PG_MAIN) ? PG_CYCLE_MAX : g_page - 1;
+    }
     g_setScroll = 0; g_listPx = 0.0f;
+    g_mainDetail = false; g_histIdx = -1;
+}
+
+// 历史上下翻页：柱状图 → 今天 → 昨天 → …… → 六天前 → 柱状图
+static void histStep(int dir)
+{
+    int n = g_histIdx + dir;
+    if (n < -1)              n = HIST_DAYS - 1;
+    if (n >= HIST_DAYS)      n = -1;
+    g_histIdx = n;
+    uiTick();
 }
 
 static void enterTimePage()
@@ -1665,6 +1784,30 @@ static bool uiTap(int x, int y)
         return true;
     }
 
+    // ---------------- 设置入口 ----------------
+    if (g_page == PG_DOOR) {
+        cfgFlush();
+        g_listPx = 0.0f;
+        g_page   = PG_SET;
+        uiConfirm();
+        return true;
+    }
+
+    // ---------------- 主页的今日详情 ----------------
+    // 上下滑动进入，点按退回主页
+    if (g_page == PG_MAIN && g_mainDetail) {
+        g_mainDetail = false;
+        uiSettle();
+        return true;
+    }
+
+    // ---------------- 历史的某一天 ----------------
+    if (g_page == PG_HIST && g_histIdx >= 0) {
+        g_histIdx = -1;
+        uiSettle();
+        return true;
+    }
+
     if (g_page != PG_SET) { pageNext(); return true; }
 
     // ---------------- 设置列表 ----------------
@@ -1680,17 +1823,6 @@ static bool uiTap(int x, int y)
 
         if (i == SET_ROW_TIME) { enterTimePage(); return true; }
         if (i == SET_ROW_COLOR) { enterColorPage(); return true; }
-        if (i == SET_ROW_CLEAR) {                 // 两次点按才算数
-            if (g_clearArmMs != 0 && (int32_t)(millis() - g_clearArmMs) < 0) {
-                clearToday();
-                uiConfirm();
-            } else {
-                g_clearArmMs = millis() + 5000;
-                uiTick();
-            }
-            g_forceRender = true;
-            return true;
-        }
         if (x > 296 && x < 366) { rowAdjust(i, -1); uiTick(); return true; }
         if (x >= 366 && x < 432) { rowAdjust(i, +1); uiTick(); return true; }
         return true;
@@ -1866,6 +1998,23 @@ static bool uiTouch(uint32_t now)
         const int adx = dx < 0 ? -dx : dx;
         const int ady = dy < 0 ? -dy : dy;
         const bool hswipe = (adx >= 46 && adx > ady + 12);
+        const bool vswipe = (ady >= 40 && ady > adx + 12);
+
+        // 上下滑动：主页进出今日详情，历史翻阅每一天
+        if (vswipe) {
+            if (g_page == PG_MAIN) {
+                const bool detail = (dy < 0);        // 上滑进入详情，下滑退回主页
+                if (detail != g_mainDetail) {
+                    g_mainDetail = detail;
+                    uiSettle();
+                }
+                return true;
+            }
+            if (g_page == PG_HIST) {
+                histStep(dy < 0 ? +1 : -1);
+                return true;
+            }
+        }
 
         // 日期轮松手
         if (g_wCol >= 0) {

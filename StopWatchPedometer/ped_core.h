@@ -477,7 +477,11 @@ static void loadToday()
     int32_t today = todayKey();
     bool    rolled = false;
     if (today != 0) {
-        if (savedDay != 0 && savedDay != today) {
+        // 只有日期确实前进才跨天清零。RTC 回到旧日期（掉电、时钟被改回）
+        // 时保留当天成绩，只把锚点改成读到的日期，避免误清。
+        if (savedDay != 0 && today > savedDay) {
+            Serial.printf("[day] rollover(boot) %ld -> %ld steps=%u\n",
+                          (long)savedDay, (long)today, (unsigned)g_steps);
             histArchive(savedDay, g_steps, g_runSteps);
             histSave();
             g_steps = 0;
@@ -520,26 +524,50 @@ static void saveToday(bool force = false)
     g_savedSteps = g_steps;
 }
 
-// 跨天：把昨天成绩入库并清零
+// 跨天：把昨天成绩入库并清零。
+// 新日期需连续两次读到且间隔 20 s 以上才生效，单次读取抖动不会清成绩。
 static void rolloverIfNeeded()
 {
+    static int32_t  pendKey = 0;
+    static uint32_t pendMs  = 0;
+
     int32_t k = todayKey();
     if (k == 0) return;
-    if (g_dayKey != 0 && k != g_dayKey) {
-        histArchive(g_dayKey, g_steps, g_runSteps);
-        histSave();
-        g_steps = 0;
-        g_runSteps = 0;
-        g_activeSec = 0;
-        bucketClear();
-        cadenceClear();
-        g_nextMilestone = 1000;
+    if (g_dayKey == 0) { g_dayKey = k; return; }
+    if (k == g_dayKey) { pendKey = 0; return; }
+
+    // 日期回退：只改锚点，不清成绩
+    if (k < g_dayKey) {
+        Serial.printf("[day] clock back %ld -> %ld, keep steps=%u\n",
+                      (long)g_dayKey, (long)k, (unsigned)g_steps);
         g_dayKey = k;
         g_prefs.putInt("day", k);
-        saveToday(true);
-    } else if (g_dayKey == 0) {
-        g_dayKey = k;
+        pendKey = 0;
+        return;
     }
+
+    // 日期前进：等下一次轮询确认同一个新日期
+    if (pendKey != k) {
+        pendKey = k;
+        pendMs  = millis();
+        return;
+    }
+    if (millis() - pendMs < 20000u) return;
+
+    Serial.printf("[day] rollover %ld -> %ld steps=%u\n",
+                  (long)g_dayKey, (long)k, (unsigned)g_steps);
+    histArchive(g_dayKey, g_steps, g_runSteps);
+    histSave();
+    g_steps = 0;
+    g_runSteps = 0;
+    g_activeSec = 0;
+    bucketClear();
+    cadenceClear();
+    g_nextMilestone = 1000;
+    g_dayKey = k;
+    g_prefs.putInt("day", k);
+    saveToday(true);
+    pendKey = 0;
 }
 
 // 计步反馈（震动 / 提示音）
