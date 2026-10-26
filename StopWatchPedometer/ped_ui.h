@@ -583,27 +583,27 @@ static inline float sminQ(float a, float b, float k)
     return b + (a - b) * h - k * h * (1.0f - h);
 }
 
-// 齿轮：10 齿 + 轴孔。齿顶弧、齿侧、齿根弧、轴孔各自是解析边界，按符号距离
-// 求覆盖率后与底色混合，所以齿侧的斜边、齿顶、轴孔都是抗锯齿的（旧版本用
-// 扇形三角形栅格化，窄处会漏像素，就是那些黑点的来源）。
-// 齿身沿左上→右下插值出渐变，外轮廓朝光侧叠一层高光、背光侧压暗，
-// 轴孔内壁再压一圈接触阴影 —— 平面图标才有金属的立体感。
+// 齿轮：8 个梯形齿 + 轴孔。齿宽由齿根到齿顶线性收窄，齿根与齿顶用 smooth-min
+// 圆化，轮廓就是一枚真齿轮的侧影。边界按符号距离求覆盖率，所以斜边、齿顶弧、
+// 轴孔都是抗锯齿的（旧版本按扇形三角形栅格化，窄处会漏像素，就是那些黑点）。
+// 齿身只沿光轴做一层渐变，不描边、不打轮廓光 —— 图标越简单越像齿轮。
 static void drawGear(int ccx, int ccy)
 {
-    const float R0   = 72.0f;                  // 齿根圆
-    const float R1   = 99.0f;                  // 齿顶圆
-    const float W0   = 11.5f;                  // 齿的半宽（到齿中心线的垂距，齿宽恒定）
-    const float RH   = 38.0f;                  // 轴孔
-    const float step = 0.6283185f;             // 2π/10
-    const float K    = 2.5f;                   // 齿角圆化
+    const float R0   = 74.0f;                  // 齿根圆
+    const float R1   = 96.0f;                  // 齿顶圆
+    const float WR   = 18.0f;                  // 齿根处的半齿宽
+    const float WT   = 14.5f;                  // 齿顶处的半齿宽
+    const float RH   = 32.0f;                  // 轴孔
+    const float step = 0.7853982f;             // 2π/8
+    const float K    = 5.0f;                   // 齿根/齿顶圆角
 
     const float sat = 0.90f;                   // 与 themeColor() 同一基色
     const float val = g_cfg.themeVal / 100.0f;
-    const uint16_t cLit  = hsv565(g_cfg.themeHue, sat * 0.50f, fminf(1.0f, val + 0.08f));
-    const uint16_t cDeep = hsv565(g_cfg.themeHue, 1.00f,       val * 0.40f);
-    const uint16_t cSpec = hsv565(g_cfg.themeHue, 0.06f, 1.00f);
+    const uint16_t cLit  = hsv565(g_cfg.themeHue, sat * 0.62f, fminf(1.0f, val + 0.06f));
+    const uint16_t cDeep = hsv565(g_cfg.themeHue, fminf(1.0f, sat * 1.08f), val * 0.55f);
 
-    const float LX = -0.45f, LY = -0.89f;      // 光从左上方来
+    const float LX = -0.40f, LY = -0.92f;      // 光从左上方来
+    const float invDR = 1.0f / (R1 - R0);
     const float inv2R = 1.0f / (2.0f * R1);
     const int   r1 = (int)R1 + 2;
 
@@ -622,13 +622,18 @@ static void drawGear(int ccx, int ccy)
             a = fabsf(a - step * 0.5f);                      // 到最近齿中心的角距
             const float u = r * sinf(a);                     // 到齿中心线的垂距
 
-            // 齿根圆以内是轮体；以外看这一角度上方是齿顶弧还是齿根弧
+            // 半齿宽随半径收窄：齿根 WR → 齿顶 WT，齿侧就是斜的
+            const float rc = (r < R0) ? R0 : (r > R1 ? R1 : r);
+            const float w  = WT + (WR - WT) * (R1 - rc) * invDR;
+
             float d;
             if (r < R0) {
-                d = R0 - r;
+                // 轮体内：正对齿间时最近的边界是齿根弧，齿下方是齿根圆角
+                const float dr = R0 - r, du = w - u;
+                d = (u > w) ? dr : sqrtf(dr * dr + du * du);
             } else {
-                const float dArc = ((u < W0) ? R1 : R0) - r;
-                const float dSid = W0 - u;
+                const float dArc = ((u < w) ? R1 : R0) - r;
+                const float dSid = w - u;
                 d = (dSid > 0.0f) ? sminQ(dArc, dSid, K)
                                   : -sminQ(-dArc, -dSid, K);
             }
@@ -643,24 +648,11 @@ static void drawGear(int ccx, int ccy)
             if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
             uint16_t c = lerp565(cLit, cDeep, t);
 
-            // 轴孔内壁的接触阴影
-            float hq = (r - RH) * 0.125f;                    // 约 8 px 的过渡带
+            // 孔边压一点暗，轴孔才像通的
+            float hq = (r - RH) * (1.0f / 6.0f);
             if (hq < 1.0f) {
                 if (hq < 0.0f) hq = 0.0f;
-                c = shade565(c, (uint32_t)(255.0f - 70.0f * (1.0f - hq)));
-            }
-
-            // 外轮廓：朝光侧高光、背光侧暗边。只在 r ≥ 齿根处做，
-            // 因为轮体内部并没有边界，那里画边会留下假的一道圆环。
-            if (r >= R0) {
-                float q = d * (1.0f / 3.6f);
-                if (q < 0.0f) q = 0.0f; else if (q > 1.0f) q = 1.0f;
-                if (q < 1.0f) {
-                    const float e = 1.0f - q;
-                    const float l = (dx * LX + dy * LY) / (r > 0.5f ? r : 0.5f);
-                    if (l > 0.0f) c = lerp565(c, cSpec, e * l * 0.55f);
-                    else          c = shade565(c, (uint32_t)(255.0f - e * (-l) * 120.0f));
-                }
+                c = shade565(c, (uint32_t)(255.0f - 50.0f * (1.0f - hq)));
             }
             ui->writePixel(x, y, (cov >= 0.996f) ? c : lerp565(C_BG, c, cov));
         }
