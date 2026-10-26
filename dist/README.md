@@ -6,16 +6,16 @@
 
 | 文件 | 大小 | 说明 |
 |---|---|---|
-| `StopWatch_Pedometer_v3.0.bin` | 1,437,376 B | 完整镜像（bootloader + 分区表 + app），写入 `0x0` |
-| `app_only.bin` | 1,371,840 B | 仅 app，写入 `0x10000`，用于已刷完整镜像的升级 |
+| `StopWatch_Pedometer_v3.0.bin` | 1,437,344 B | 完整镜像（bootloader + 分区表 + app），写入 `0x0` |
+| `app_only.bin` | 1,371,808 B | 仅 app，写入 `0x10000`，用于已刷完整镜像的升级 |
 | `flash.bat` | — | Windows 烧写脚本 |
 
 ```
 SHA256  StopWatch_Pedometer_v3.0.bin
-2DEDC2C6BDCFC3636695F45BD240EF97ABD729238F41AA7CDA1F9DE5D8A6CCF8
+F906FA8AF2CF74B3F916BBF21AD58B39FD02CA4B2C0CE2C0A5AEA204F6C56083
 
 SHA256  app_only.bin
-7A1D84B9385D67E24D373E8F342C5330F722E30A89EF12BD3A72DD8BC513BAE1
+069180AE7E1EB58AE67F7CD56DEB2C2D663F524F092334D3218794E5D8F1C45E
 ```
 
 ## 刷入

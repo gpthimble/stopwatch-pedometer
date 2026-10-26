@@ -159,15 +159,15 @@ static const LangStr kLangTab[] = {
     {"简体中文", "简体中文"},
     {"English",  "English"},
     {"点按进入", "Tap to open"},
-    {"上下拖动 · 左右切页", "Drag to scroll · swipe pages"},
+    {"上下拖动 · 左右切页", "Drag · swipe to turn"},
     // 对时
     {"年", "Year"}, {"月", "Month"}, {"日", "Day"},
     {"时", "Hour"}, {"分", "Minute"},
     {"上下滑动 · 切换日期", "Swipe to change date"},
-    {"左滑下一步 · 右滑返回", "Swipe left next · right back"},
+    {"左滑下一步 · 右滑返回", "Swipe left / right"},
     {"点按确认", "Tap to confirm"},
     // 配色
-    {"环上选色相 · 圆内调亮度", "Ring: hue · center: brightness"},
+    {"环上选色相 · 圆内调亮度", "Hue ring · brightness"},
     // 其它
     {"电量", "Battery"},
     {"USB 供电", "USB power"},
