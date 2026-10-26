@@ -127,7 +127,7 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 ```bash
 esptool --chip esp32s3 -p COM5 -b 460800 write_flash \
   --flash_mode keep --flash_freq keep --flash_size keep \
-  0x0 dist/StopWatch_Pedometer_v3.4.bin
+  0x0 dist/StopWatch_Pedometer_v2.5.bin
 ```
 
 三个 `keep` 用于保留镜像 header 中的 flash 模式、频率与容量设定。省略时 header 被改写为 `qio`，ROM 停在 `mode:QIO` 之后反复复位。
