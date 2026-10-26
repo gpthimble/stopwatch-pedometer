@@ -25,9 +25,9 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 
 主页、近 7 天、设置入口三页参与左右循环。设置列表由入口页点按进入；对时页与配色页由设置列表进入。
 
-| 主页 | 近 7 天 | 设置 |
-|---|---|---|
-| <img src="docs/screenshots/p0_main.png" width="150"> | <img src="docs/screenshots/p2_week.png" width="150"> | <img src="docs/screenshots/p3_settings.png" width="150"> |
+| 主页 | 近 7 天 | 设置入口 | 设置列表 |
+|---|---|---|---|
+| <img src="docs/screenshots/p0_main.png" width="150"> | <img src="docs/screenshots/p2_week.png" width="150"> | <img src="docs/screenshots/p5_door.png" width="150"> | <img src="docs/screenshots/p3_settings.png" width="150"> |
 
 主页上滑进入今日详情，下滑返回。历史页上滑依次查看今天、昨天至六天前，再到下一页回到柱状图。
 
