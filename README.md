@@ -121,7 +121,7 @@ ESP32-S3R8（16 MB Flash / 8 MB OPI PSRAM）、BMI270、466×466 CO5300 AMOLED�
 ```bash
 esptool --chip esp32s3 -p COM5 -b 460800 write_flash \
   --flash_mode keep --flash_freq keep --flash_size keep \
-  0x0 dist/StopWatch_Pedometer_v3.2.bin
+  0x0 dist/StopWatch_Pedometer_v3.3.bin
 ```
 
 三个 `keep` 用于保留镜像 header 中的 flash 模式、频率与容量设定。省略时 header 被改写为 `qio`，ROM 停在 `mode:QIO` 之后反复复位。
@@ -141,6 +141,8 @@ python tools/build.py
 ```
 
 脚本获取 M5Unified 0.2.27 与 M5GFX 0.2.34 至 `tools/libs/`，应用 `docs/patches/0001-co5300-wakeup-timing.patch`，编译至 `out/`，输出固件大小与 SHA256。依赖已存在时跳过获取与打补丁。
+
+编译前会核对字库：界面文案里的每个汉字都必须存在于 `ped_font.h`，缺字会直接报错并列出缺的字。字模由 `python tools/genfont.py` 从源码字符串字面量自动抓字生成，改动文案后先跑一遍（需要 Pillow 与系统里的微软雅黑）。
 
 该补丁修正 CO5300 的唤醒时序（复位释放后等待 120 ms，SLPOUT 居首）；未应用时冷启动出现间歇性黑屏。
 

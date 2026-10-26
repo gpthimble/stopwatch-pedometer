@@ -7,8 +7,10 @@
 
 输出目录 out/，产物为 StopWatchPedometer.ino.bin。
 """
+import glob
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -107,11 +109,51 @@ def apply_patch(dst, name, pf):
     open(marker, "w", encoding="utf-8").write("ok\n")
 
 
+def check_font():
+    """界面里的每个汉字都必须在 ped_font.h 里，否则屏上只留一个空位。
+
+    ped_font.h 由 tools/genfont.py 从源码的字符串字面量里抓字生成；
+    改了文案却没重新生成字模，缺的字会静默渲染成空白（曾经把
+    「简体中文」显示成「 体 」）。
+    """
+    src_dir = os.path.join(ROOT, "StopWatchPedometer")
+    text = ""
+    for p in glob.glob(os.path.join(src_dir, "*.h")) + glob.glob(os.path.join(src_dir, "*.ino")):
+        if p.endswith("ped_font.h"):
+            continue
+        with open(p, encoding="utf-8") as f:
+            text += f.read()
+
+    used = set()
+    for m in re.finditer(r'"((?:[^"\\]|\\.)*)"', text):
+        for ch in m.group(1):
+            o = ord(ch)
+            if o >= 0x20 and (0x4E00 <= o <= 0x9FFF or o > 0x7F):
+                used.add(ch)
+
+    fp = os.path.join(src_dir, "ped_font.h")
+    if not os.path.isfile(fp):
+        fail("缺少 ped_font.h，先运行 python tools/genfont.py")
+    font = open(fp, encoding="utf-8").read()
+    seg = font.split("static const PedGlyph kGlH1[]")[1].split("};")[0]
+    have = set(int(x, 16) for x in re.findall(r"\{0x([0-9A-Fa-f]{4,6}),", seg))
+
+    missing = sorted(ch for ch in used if ord(ch) not in have)
+    if missing:
+        print(f"[font] 字库缺 {len(missing)} 个字：{''.join(missing)}")
+        fail("请先运行 python tools/genfont.py 重新生成字模：\n"
+             "        python tools/genfont.py")
+    print(f"[ok] 字库覆盖 {len(used)} 个字")
+
+
 def main():
     print("== 环境检查 ==")
     need("git")
     cli = find_arduino_cli()
     check_core(cli)
+
+    print("\n== 字库检查 ==")
+    check_font()
 
     print("\n== 获取依赖 ==")
     for name, url, ref, patch in DEPS:
